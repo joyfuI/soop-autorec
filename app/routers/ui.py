@@ -14,8 +14,11 @@ from app.models import dashboard as dashboard_model
 from app.models import event_log as event_log_model
 from app.models import recording as recording_model
 from app.models import settings as settings_model
+from app.utils.time import format_datetime_for_display, format_datetime_iso_z
 
 templates = Jinja2Templates(directory="app/templates")
+templates.env.filters["fmt_datetime"] = format_datetime_for_display
+templates.env.filters["fmt_iso_z"] = format_datetime_iso_z
 router = APIRouter(tags=["ui"])
 CHANNEL_TAB_KEYS = {"channel", "auth", "proxy"}
 

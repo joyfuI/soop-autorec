@@ -139,6 +139,18 @@
         "record_start_failed":"녹화 시작 실패",
         "recordings_cleanup":"녹화 이력 정리"
       } %}
+      {% macro render_time_value(value) -%}
+        {%- if value -%}
+          {%- set server_time = value|fmt_datetime(settings.timezone) -%}
+          <time
+            class="js-local-time"
+            datetime="{{ value }}"
+            title="{{ value|fmt_iso_z(settings.timezone) }}"
+          >{{ server_time }}</time>
+        {%- else -%}
+          -
+        {%- endif -%}
+      {%- endmacro %}
 
       <header class="top">
         <h1>대시보드</h1>
@@ -202,7 +214,7 @@
                       </span>
                     </td>
                     <td class="mono">{{ channel.last_broad_no or "-" }}</td>
-                    <td class="mono">{{ channel.last_probe_at or "-" }}</td>
+                    <td class="mono">{{ render_time_value(channel.last_probe_at) }}</td>
                     <td>{{ channel.last_error or "-" }}</td>
                   </tr>
                 {% endfor %}
@@ -229,7 +241,7 @@
               {% if recent_events %}
                 {% for event in recent_events %}
                   <tr>
-                    <td class="mono">{{ event.created_at }}</td>
+                    <td class="mono">{{ render_time_value(event.created_at) }}</td>
                     <td>{{ level_labels.get(event.level, event.level) }}</td>
                     <td>{{ event_type_labels.get(event.event_type, event.event_type) }}</td>
                     <td class="mono">{{ event.channel_id or "-" }}</td>
@@ -264,8 +276,8 @@
                     <td class="mono">{{ rec.user_id }}</td>
                     <td class="mono">{{ rec.broad_no }}</td>
                     <td>{{ status_labels.get(rec.status, rec.status) }}</td>
-                    <td class="mono">{{ rec.detected_at }}</td>
-                    <td class="mono">{{ rec.recording_stopped_at or "-" }}</td>
+                    <td class="mono">{{ render_time_value(rec.detected_at) }}</td>
+                    <td class="mono">{{ render_time_value(rec.recording_stopped_at) }}</td>
                   </tr>
                 {% endfor %}
               {% else %}
@@ -296,6 +308,46 @@
 
         return window.confirm("서버를 재시작할까요?");
       }
+
+      function formatLocalDateTime(date) {
+        const pad2 = (value) => String(value).padStart(2, "0");
+        return (
+          String(date.getFullYear()) + "-" +
+          pad2(date.getMonth() + 1) + "-" +
+          pad2(date.getDate()) + " " +
+          pad2(date.getHours()) + ":" +
+          pad2(date.getMinutes()) + ":" +
+          pad2(date.getSeconds())
+        );
+      }
+
+      function localTimezoneLabel(date) {
+        try {
+          const formatter = new Intl.DateTimeFormat(undefined, { timeZoneName: "short" });
+          const parts = formatter.formatToParts(date);
+          const part = parts.find((item) => item.type === "timeZoneName");
+          return part ? part.value : "";
+        } catch (error) {
+          return "";
+        }
+      }
+
+      function applyBrowserLocalTime() {
+        const elements = document.querySelectorAll("time.js-local-time[datetime]");
+        elements.forEach((element) => {
+          const raw = element.getAttribute("datetime");
+          if (!raw) return;
+
+          const parsed = new Date(raw);
+          if (Number.isNaN(parsed.getTime())) return;
+
+          const localText = formatLocalDateTime(parsed);
+          const zone = localTimezoneLabel(parsed);
+          element.textContent = zone ? localText + " " + zone : localText;
+        });
+      }
+
+      applyBrowserLocalTime();
 
       (function () {
         const STREAM_URL = "/api/system/stream";
