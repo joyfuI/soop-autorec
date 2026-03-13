@@ -37,14 +37,50 @@ uv run python -m app.main
 
 웹 UI: [http://127.0.0.1:8000/](http://127.0.0.1:8000/)
 
-## 빠른 시작 (Docker Compose)
+## 빠른 시작 (Docker 이미지)
+
+### Docker CLI
 
 ```bash
-docker compose up -d --build
+docker run -d \
+  --name soop-autorec \
+  -p 8000:8000 \
+  -e APP_SECRET_KEY=change-me \
+  -v ./data:/workspace/data \
+  ghcr.io/joyfui/soop-autorec:latest
 ```
 
-- Compose 파일: `docker-compose.yml`
-- Dockerfile: `Dockerfile`
+### Docker Compose
+
+`docker-compose.yml`에 아래처럼 `image`를 지정한 뒤 실행합니다.
+
+```yaml
+services:
+  app:
+    image: ghcr.io/joyfui/soop-autorec:latest
+    container_name: soop-autorec
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8000
+      TIMEZONE: Asia/Seoul
+      POLL_INTERVAL_SEC: 10
+      OFFLINE_CONFIRM_COUNT: 2
+      FFMPEG_BINARY: ffmpeg
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-}
+      BOOTSTRAP_REPO_URL: https://github.com/joyfuI/soop-autorec.git
+      BOOTSTRAP_REPO_BRANCH: main
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/workspace/data
+    restart: unless-stopped
+    stop_grace_period: 90s
+```
+
+```bash
+docker compose up -d
+```
+
 - 런타임 데이터 경로: `./data -> /workspace/data`
 - 업데이트에 실패하면 기존 상태로 실행을 시도합니다.
 - `/workspace`는 컨테이너 내부 writable layer를 사용하므로, 컨테이너 재생성 시 코드/.venv는 초기화됩니다.
