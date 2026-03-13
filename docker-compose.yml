@@ -7,7 +7,7 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 8000
-      TIMEZONE: Asia/Seoul
+      TZ: Asia/Seoul
       POLL_INTERVAL_SEC: 10
       OFFLINE_CONFIRM_COUNT: 2
       FFMPEG_BINARY: ffmpeg

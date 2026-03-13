@@ -21,7 +21,7 @@ class Settings(BaseSettings):
 
     host: str = "0.0.0.0"
     port: int = 8000
-    timezone: str = "Asia/Seoul"
+    timezone: str = Field(default="Asia/Seoul", validation_alias="TZ")
 
     poll_interval_sec: int = Field(default=10, ge=1)
     offline_confirm_count: int = Field(default=2, ge=1)

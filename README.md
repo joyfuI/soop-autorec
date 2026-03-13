@@ -62,7 +62,7 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 8000
-      TIMEZONE: Asia/Seoul
+      TZ: Asia/Seoul
       POLL_INTERVAL_SEC: 10
       OFFLINE_CONFIRM_COUNT: 2
       FFMPEG_BINARY: ffmpeg
@@ -162,7 +162,7 @@ curl -X POST http://127.0.0.1:8000/api/channels \
 
 - `HOST`
 - `PORT`
-- `TIMEZONE`
+- `TZ`
 - `POLL_INTERVAL_SEC`
 - `OFFLINE_CONFIRM_COUNT`
 - `FFMPEG_BINARY`
