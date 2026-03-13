@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>soop-autorec 대시보드</title>
+    <style>
+      :root {
+        --bg: #f3f4f6;
+        --panel: #ffffff;
+        --ink: #111827;
+        --muted: #6b7280;
+        --line: #d1d5db;
+        --accent: #0f766e;
+        --warn: #b45309;
+        --error: #b91c1c;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: radial-gradient(circle at top left, #e5f3f1 0%, var(--bg) 55%);
+        color: var(--ink);
+        font-family: "Pretendard", "Noto Sans KR", "Segoe UI", sans-serif;
+      }
+      .wrap {
+        max-width: 1180px;
+        margin: 28px auto 40px;
+        padding: 0 14px;
+      }
+      .top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 16px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 1.35rem;
+      }
+      .nav {
+        display: flex;
+        gap: 8px;
+      }
+      .nav form { margin: 0; }
+      .btn-link {
+        font: inherit;
+        text-decoration: none;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px 12px;
+        color: var(--ink);
+        font-size: 0.92rem;
+        cursor: pointer;
+      }
+      .btn-link.danger {
+        color: #fff;
+        border-color: #b91c1c;
+        background: #b91c1c;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 10px;
+      }
+      .kpi {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 14px;
+      }
+      .kpi .label { color: var(--muted); font-size: 0.85rem; margin-bottom: 4px; }
+      .kpi .value { font-size: 1.2rem; font-weight: 700; }
+      .layout {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 12px;
+        margin-top: 12px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      .panel h2 {
+        margin: 0;
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--line);
+        font-size: 1rem;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.9rem;
+      }
+      th, td {
+        text-align: left;
+        padding: 9px 12px;
+        border-bottom: 1px solid #edf0f3;
+        vertical-align: top;
+      }
+      th { color: var(--muted); font-weight: 600; font-size: 0.8rem; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .status {
+        display: inline-block;
+        border-radius: 999px;
+        padding: 2px 8px;
+        font-size: 0.78rem;
+        border: 1px solid var(--line);
+      }
+      .status.recording { color: var(--accent); border-color: #99f6e4; background: #f0fdfa; }
+      .status.error { color: var(--error); border-color: #fecaca; background: #fef2f2; }
+      .status.offline { color: #4b5563; background: #f9fafb; }
+      .small { color: var(--muted); font-size: 0.83rem; }
+      .notice {
+        border: 1px solid;
+        border-radius: 10px;
+        padding: 10px 12px;
+        margin-bottom: 10px;
+        font-size: 0.92rem;
+      }
+      .notice.ok { border-color: #a7f3d0; background: #ecfdf5; color: #065f46; }
+      .notice.err { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      {% set status_labels = {"offline":"오프라인","recording":"녹화 중","error":"오류","stopping":"중지 중","starting":"시작 중","remuxing":"리먹싱 중","completed":"완료","failed":"실패","partial":"부분 완료","interrupted":"중단됨"} %}
+      {% set level_labels = {"info":"정보","warning":"경고","error":"오류"} %}
+      {% set event_type_labels = {
+        "startup_recovery":"시작 복구",
+        "live_detected":"라이브 감지",
+        "probe_error":"프로브 오류",
+        "record_start":"녹화 시작",
+        "record_stop_requested":"녹화 중지 요청",
+        "record_complete":"녹화 완료",
+        "record_failed":"녹화 실패",
+        "record_start_failed":"녹화 시작 실패",
+        "recordings_cleanup":"녹화 이력 정리"
+      } %}
+
+      <header class="top">
+        <h1>대시보드</h1>
+        <nav class="nav">
+          <a class="btn-link" href="/channels">채널 관리</a>
+          <form
+            method="post"
+            action="/system/restart"
+            data-active-recorder-count="{{ active_recorder_count }}"
+            onsubmit="return confirmRestart(this)"
+          >
+            <input type="hidden" name="force" value="0" />
+            <input type="hidden" name="return_to" value="/" />
+            <button class="btn-link danger" type="submit">서버 재시작</button>
+          </form>
+        </nav>
+      </header>
+
+      {% if message %}
+        <div class="notice ok">{{ message }}</div>
+      {% endif %}
+      {% if error %}
+        <div class="notice err">{{ error }}</div>
+      {% endif %}
+
+      <section class="grid">
+        <article class="kpi"><div class="label">전체 채널</div><div class="value">{{ summary.total_channels }}</div></article>
+        <article class="kpi"><div class="label">활성 채널</div><div class="value">{{ summary.enabled_channels }}</div></article>
+        <article class="kpi"><div class="label">녹화 중 채널</div><div class="value">{{ summary.recording_channels }}</div></article>
+        <article class="kpi"><div class="label">오류 채널</div><div class="value">{{ summary.error_channels }}</div></article>
+        <article class="kpi"><div class="label">Supervisor 루프 횟수</div><div class="value">{{ status.iteration_count }}</div></article>
+        <article class="kpi"><div class="label">활성 녹화 프로세스</div><div class="value">{{ status.active_recorder_count }}</div></article>
+        <article class="kpi"><div class="label">최근 프로브 오류</div><div class="value">{{ status.last_probe_error_count }}</div></article>
+      </section>
+
+      <section class="layout">
+        <article class="panel">
+          <h2>채널 상태</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>SOOP ID</th>
+                <th>이름</th>
+                <th>상태</th>
+                <th>방송 번호</th>
+                <th>최근 확인 시각</th>
+                <th>최근 오류</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% if channels %}
+                {% for channel in channels %}
+                  <tr>
+                    <td class="mono">{{ channel.id }}</td>
+                    <td class="mono">{{ channel.user_id }}</td>
+                    <td>{{ channel.display_name or "-" }}</td>
+                    <td>
+                      <span class="status {{ channel.last_status }}">
+                        {{ status_labels.get(channel.last_status, channel.last_status) }}
+                      </span>
+                    </td>
+                    <td class="mono">{{ channel.last_broad_no or "-" }}</td>
+                    <td class="mono">{{ channel.last_probe_at or "-" }}</td>
+                    <td>{{ channel.last_error or "-" }}</td>
+                  </tr>
+                {% endfor %}
+              {% else %}
+                <tr><td colspan="7" class="small">등록된 채널이 없습니다. 채널 관리에서 추가하세요.</td></tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </article>
+
+        <article class="panel">
+          <h2>최근 이벤트</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>시간</th>
+                <th>레벨</th>
+                <th>이벤트 타입</th>
+                <th>채널 ID</th>
+                <th>메시지</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% if recent_events %}
+                {% for event in recent_events %}
+                  <tr>
+                    <td class="mono">{{ event.created_at }}</td>
+                    <td>{{ level_labels.get(event.level, event.level) }}</td>
+                    <td class="mono">{{ event_type_labels.get(event.event_type, event.event_type) }}</td>
+                    <td class="mono">{{ event.channel_id or "-" }}</td>
+                    <td>{{ event.message }}</td>
+                  </tr>
+                {% endfor %}
+              {% else %}
+                <tr><td colspan="5" class="small">아직 이벤트가 없습니다.</td></tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </article>
+
+        <article class="panel">
+          <h2>최근 녹화 세션</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>SOOP ID</th>
+                <th>방송 번호</th>
+                <th>상태</th>
+                <th>감지 시각</th>
+                <th>종료 시각</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% if recent_recordings %}
+                {% for rec in recent_recordings %}
+                  <tr>
+                    <td class="mono">{{ rec.id }}</td>
+                    <td class="mono">{{ rec.user_id }}</td>
+                    <td class="mono">{{ rec.broad_no }}</td>
+                    <td>{{ status_labels.get(rec.status, rec.status) }}</td>
+                    <td class="mono">{{ rec.detected_at }}</td>
+                    <td class="mono">{{ rec.recording_stopped_at or "-" }}</td>
+                  </tr>
+                {% endfor %}
+              {% else %}
+                <tr><td colspan="6" class="small">아직 녹화 세션이 없습니다.</td></tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </article>
+      </section>
+    </div>
+
+    <script>
+      function confirmRestart(form) {
+        const activeCount = Number(form.dataset.activeRecorderCount || "0");
+        const forceInput = form.querySelector('input[name="force"]');
+        if (forceInput) forceInput.value = "0";
+
+        if (activeCount > 0) {
+          const confirmed = window.confirm(
+            "현재 " + activeCount + "개 채널이 녹화 중입니다.\n" +
+            "지금 재시작하면 진행 중 녹화가 중단될 수 있습니다.\n" +
+            "정말 재시작할까요?"
+          );
+          if (!confirmed) return false;
+          if (forceInput) forceInput.value = "1";
+          return true;
+        }
+
+        return window.confirm("서버를 재시작할까요?");
+      }
+
+      (function () {
+        const STREAM_URL = "/api/system/stream";
+        const RECONNECT_DELAY_MS = 3000;
+        const FALLBACK_POLL_MS = 5000;
+
+        let eventSource = null;
+        let reconnectTimer = null;
+        let fallbackTimer = null;
+        let reloadScheduled = false;
+
+        let baselineIteration = null;
+        let baselineActiveRecorder = null;
+        let baselineLatestEventId = null;
+
+        function scheduleReload() {
+          if (reloadScheduled) return;
+          reloadScheduled = true;
+          window.setTimeout(() => {
+            window.location.reload();
+          }, 350);
+        }
+
+        async function pollFallbackOnce() {
+          try {
+            const [statusRes, eventsRes] = await Promise.all([
+              fetch("/api/system/status", { cache: "no-store" }),
+              fetch("/api/events?limit=1", { cache: "no-store" }),
+            ]);
+            if (!statusRes.ok || !eventsRes.ok) return;
+
+            const status = await statusRes.json();
+            const events = await eventsRes.json();
+            const latestEventId =
+              Array.isArray(events) && events.length > 0 ? Number(events[0].id || 0) : 0;
+
+            const iterationCount = Number(status.iteration_count || 0);
+            const activeRecorderCount = Number(status.active_recorder_count || 0);
+
+            if (baselineIteration === null) {
+              baselineIteration = iterationCount;
+              baselineActiveRecorder = activeRecorderCount;
+              baselineLatestEventId = latestEventId;
+              return;
+            }
+
+            if (
+              iterationCount !== baselineIteration ||
+              activeRecorderCount !== baselineActiveRecorder ||
+              latestEventId !== baselineLatestEventId
+            ) {
+              scheduleReload();
+              return;
+            }
+
+            baselineIteration = iterationCount;
+            baselineActiveRecorder = activeRecorderCount;
+            baselineLatestEventId = latestEventId;
+          } catch (error) {
+            // ignore and wait for next poll
+          }
+        }
+
+        function startFallbackPolling() {
+          if (fallbackTimer !== null) return;
+          baselineIteration = null;
+          baselineActiveRecorder = null;
+          baselineLatestEventId = null;
+          fallbackTimer = window.setInterval(() => {
+            void pollFallbackOnce();
+          }, FALLBACK_POLL_MS);
+          void pollFallbackOnce();
+        }
+
+        function stopFallbackPolling() {
+          if (fallbackTimer === null) return;
+          window.clearInterval(fallbackTimer);
+          fallbackTimer = null;
+          baselineIteration = null;
+          baselineActiveRecorder = null;
+          baselineLatestEventId = null;
+        }
+
+        function scheduleReconnect() {
+          if (reconnectTimer !== null) return;
+          reconnectTimer = window.setTimeout(() => {
+            reconnectTimer = null;
+            connectStream();
+          }, RECONNECT_DELAY_MS);
+        }
+
+        function connectStream() {
+          if (!("EventSource" in window)) {
+            startFallbackPolling();
+            return;
+          }
+
+          if (eventSource !== null) {
+            return;
+          }
+
+          const source = new EventSource(STREAM_URL);
+          eventSource = source;
+
+          source.addEventListener("dashboard", () => {
+            scheduleReload();
+          });
+
+          source.onopen = () => {
+            stopFallbackPolling();
+            if (reconnectTimer !== null) {
+              window.clearTimeout(reconnectTimer);
+              reconnectTimer = null;
+            }
+          };
+
+          source.onerror = () => {
+            source.close();
+            eventSource = null;
+            startFallbackPolling();
+            scheduleReconnect();
+          };
+        }
+
+        connectStream();
+      })();
+    </script>
+  </body>
+</html>

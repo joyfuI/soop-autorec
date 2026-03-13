@@ -1,0 +1,22 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: soop-autorec
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8000
+      TIMEZONE: Asia/Seoul
+      POLL_INTERVAL_SEC: 10
+      OFFLINE_CONFIRM_COUNT: 2
+      FFMPEG_BINARY: ffmpeg
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-}
+      BOOTSTRAP_REPO_URL: https://github.com/joyfuI/soop-autorec.git
+      BOOTSTRAP_REPO_BRANCH: main
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/workspace/data
+    restart: unless-stopped
+    stop_grace_period: 90s
