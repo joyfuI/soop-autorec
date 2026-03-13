@@ -231,7 +231,7 @@
                   <tr>
                     <td class="mono">{{ event.created_at }}</td>
                     <td>{{ level_labels.get(event.level, event.level) }}</td>
-                    <td class="mono">{{ event_type_labels.get(event.event_type, event.event_type) }}</td>
+                    <td>{{ event_type_labels.get(event.event_type, event.event_type) }}</td>
                     <td class="mono">{{ event.channel_id or "-" }}</td>
                     <td>{{ event.message }}</td>
                   </tr>
