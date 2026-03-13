@@ -145,7 +145,7 @@
           <time
             class="js-local-time"
             datetime="{{ value }}"
-            title="{{ value|fmt_iso_z(settings.timezone) }}"
+            title="{{ value|fmt_iso_offset(settings.timezone) }}"
           >{{ server_time }}</time>
         {%- else -%}
           -

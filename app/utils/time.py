@@ -56,9 +56,9 @@ def format_datetime_for_display(
     return f"{localized.strftime('%Y-%m-%d %H:%M:%S')} {timezone_label}"
 
 
-def format_datetime_iso_z(
+def format_datetime_iso_offset(
     value: str | datetime | None,
-    timezone_name: str | None = None,
+    timezone_name: str,
     *,
     empty: str = "-",
 ) -> str:
@@ -68,9 +68,5 @@ def format_datetime_iso_z(
             return empty
         return str(value)
 
-    if timezone_name:
-        localized = to_timezone(parsed, timezone_name)
-        return localized.isoformat(timespec="seconds")
-
-    utc_value = parsed.astimezone(UTC)
-    return utc_value.isoformat(timespec="seconds").replace("+00:00", "Z")
+    localized = to_timezone(parsed, timezone_name)
+    return localized.isoformat(timespec="seconds")
