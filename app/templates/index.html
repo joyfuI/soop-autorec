@@ -209,7 +209,7 @@
                 {% for channel in channels %}
                   <tr>
                     <td class="mono">{{ channel.id }}</td>
-                    <td class="mono">{{ channel.user_id }}</td>
+                    <td>{{ channel.user_id }}</td>
                     <td>{{ channel.display_name or "-" }}</td>
                     <td>
                       <span class="status {{ channel.last_status }}">
@@ -276,7 +276,7 @@
                 {% for rec in recent_recordings %}
                   <tr>
                     <td class="mono">{{ rec.id }}</td>
-                    <td class="mono">{{ rec.user_id }}</td>
+                    <td>{{ rec.user_id }}</td>
                     <td class="mono">{{ rec.broad_no }}</td>
                     <td>{{ status_labels.get(rec.status, rec.status) }}</td>
                     <td class="mono">{{ render_time_value(rec.detected_at) }}</td>

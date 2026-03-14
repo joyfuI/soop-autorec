@@ -322,7 +322,7 @@
                 {% for c in channels %}
                   <tr>
                     <td class="mono">{{ c.id }}</td>
-                    <td class="mono">{{ c.user_id }}</td>
+                    <td>{{ c.user_id }}</td>
                     <td>{{ c.display_name or "-" }}</td>
                     <td>{{ "Y" if c.enabled else "N" }}</td>
                     <td>{{ status_labels.get(c.last_status, c.last_status) }}</td>
