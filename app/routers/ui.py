@@ -181,12 +181,13 @@ async def update_channel(
         return _build_redirect("/channels", error="채널을 찾을 수 없습니다.", tab=tab_key)
 
     stream_password_value = stream_password.strip() or None
+    next_enabled = bool(channel["enabled"]) if enabled is None else enabled == "on"
 
     updated = channel_model.update_channel(
         settings,
         channel_id,
         display_name=display_name.strip() or None,
-        enabled=enabled == "on",
+        enabled=next_enabled,
         output_template=output_template.strip() or None,
         stream_password=stream_password_value,
         preferred_quality=preferred_quality.strip() or str(channel["preferred_quality"] or "best"),

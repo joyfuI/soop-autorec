@@ -185,10 +185,6 @@
         grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
         gap: 8px;
       }
-      .edit-grid .check {
-        margin-top: 0;
-        align-self: end;
-      }
       .auth-section {
         display: grid;
         gap: 10px;
@@ -376,10 +372,6 @@
                                 value="{{ c.output_template or '' }}"
                                 placeholder="${displayName}/${YYMMDD} ${title} [${broadNo}].mp4"
                               />
-                            </div>
-                            <div class="check">
-                              <input id="enabled_{{ c.id }}" name="enabled" type="checkbox" {% if c.enabled %}checked{% endif %} />
-                              <label for="enabled_{{ c.id }}">활성화</label>
                             </div>
                           </div>
                           <button class="btn" type="submit">저장</button>
