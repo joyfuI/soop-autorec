@@ -110,6 +110,7 @@
         border: 1px solid var(--line);
       }
       .status.recording { color: var(--accent); border-color: #99f6e4; background: #f0fdfa; }
+      .status.standby_no_stream { color: var(--warn); border-color: #fcd34d; background: #fffbeb; }
       .status.error { color: var(--error); border-color: #fecaca; background: #fef2f2; }
       .status.offline { color: #4b5563; background: #f9fafb; }
       .small { color: var(--muted); font-size: 0.83rem; }
@@ -126,7 +127,7 @@
   </head>
   <body>
     <div class="wrap">
-      {% set status_labels = {"offline":"오프라인","recording":"녹화 중","error":"오류","stopping":"중지 중","starting":"시작 중","remuxing":"리먹싱 중","completed":"완료","failed":"실패","partial":"부분 완료","interrupted":"중단됨"} %}
+      {% set status_labels = {"offline":"오프라인","recording":"녹화 중","standby_no_stream":"방송 대기(스트림 미준비)","error":"오류","stopping":"중지 중","starting":"시작 중","remuxing":"리먹싱 중","completed":"완료","failed":"실패","partial":"부분 완료","interrupted":"중단됨"} %}
       {% set level_labels = {"info":"정보","warning":"경고","error":"오류"} %}
       {% set event_type_labels = {
         "startup_recovery":"시작 복구",
@@ -137,6 +138,8 @@
         "record_complete":"녹화 완료",
         "record_failed":"녹화 실패",
         "record_start_failed":"녹화 시작 실패",
+        "stream_url_unavailable":"스트림 URL 대기",
+        "stream_url_recovered":"스트림 URL 복구",
         "recordings_cleanup":"녹화 이력 정리"
       } %}
       {% macro render_time_value(value) -%}

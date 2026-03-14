@@ -198,7 +198,7 @@
   </head>
   <body>
     <div class="wrap">
-      {% set status_labels = {"offline":"오프라인","recording":"녹화 중","error":"오류","stopping":"중지 중","starting":"시작 중","remuxing":"리먹싱 중","completed":"완료","failed":"실패","partial":"부분 완료","interrupted":"중단됨"} %}
+      {% set status_labels = {"offline":"오프라인","recording":"녹화 중","standby_no_stream":"방송 대기(스트림 미준비)","error":"오류","stopping":"중지 중","starting":"시작 중","remuxing":"리먹싱 중","completed":"완료","failed":"실패","partial":"부분 완료","interrupted":"중단됨"} %}
       <header class="top">
         <h1>채널 관리</h1>
         <div class="top-actions">

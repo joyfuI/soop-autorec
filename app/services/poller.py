@@ -228,6 +228,12 @@ class Supervisor:
             payload=payload,
         )
 
+        prior_status = str(channel.get("last_status") or "")
+        prior_broad_no = self._parse_optional_int(channel.get("last_broad_no"))
+        next_status = "standby_no_stream" if ensure_result.standby_no_stream else (
+            "recording" if ensure_result.active else "error"
+        )
+
         if created and ensure_result.active:
             event_log_model.add_event_log(
                 self.settings,
@@ -239,15 +245,84 @@ class Supervisor:
                 payload={"broad_no": broad_no},
             )
 
+        self._log_live_status_transition(
+            channel=channel,
+            recording_id=recording["id"],
+            broad_no=broad_no,
+            prior_status=prior_status,
+            prior_broad_no=prior_broad_no,
+            next_status=next_status,
+            error=ensure_result.error,
+        )
+
         channel_model.update_probe_state(
             self.settings,
             channel["id"],
-            last_status="recording" if ensure_result.active else "error",
+            last_status=next_status,
             last_broad_no=broad_no,
             last_probe_at=now_iso,
             last_error=ensure_result.error,
             offline_streak=0,
         )
+
+    def _log_live_status_transition(
+        self,
+        *,
+        channel: dict[str, object],
+        recording_id: int,
+        broad_no: int,
+        prior_status: str,
+        prior_broad_no: int | None,
+        next_status: str,
+        error: str | None,
+    ) -> None:
+        same_broadcast = prior_broad_no == broad_no
+
+        entering_standby = (
+            next_status == "standby_no_stream"
+            and (prior_status != "standby_no_stream" or not same_broadcast)
+        )
+        if entering_standby:
+            event_log_model.add_event_log(
+                self.settings,
+                level="warning",
+                event_type="stream_url_unavailable",
+                channel_id=int(channel["id"]),
+                recording_id=recording_id,
+                message=(
+                    "방송은 감지됐지만 재생 URL을 아직 확인하지 못했습니다. "
+                    "대기 후 재시도합니다."
+                ),
+                payload={
+                    "broad_no": broad_no,
+                    "error": error,
+                },
+            )
+            return
+
+        recovering_from_standby = (
+            next_status == "recording"
+            and prior_status == "standby_no_stream"
+            and same_broadcast
+        )
+        if recovering_from_standby:
+            event_log_model.add_event_log(
+                self.settings,
+                level="info",
+                event_type="stream_url_recovered",
+                channel_id=int(channel["id"]),
+                recording_id=recording_id,
+                message="재생 URL을 확보해 녹화를 다시 시작했습니다.",
+                payload={"broad_no": broad_no},
+            )
+
+    def _parse_optional_int(self, value: object) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     async def _handle_offline(self, channel: dict) -> None:
         now_iso = now_utc().isoformat()

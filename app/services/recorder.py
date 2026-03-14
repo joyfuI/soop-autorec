@@ -25,12 +25,17 @@ DEFAULT_OUTPUT_TEMPLATE = "${displayName}/${YY}${MM}${DD} ${title} [${broadNo}].
 MAX_FINAL_PATH_CANDIDATES = 500
 
 
+class StreamUrlNotReadyError(ValueError):
+    """Raised when streamlink cannot provide a playable stream URL yet."""
+
+
 @dataclass
 class EnsureRecordingResult:
     active: bool
     started: bool
     recording_id: int
     error: str | None = None
+    standby_no_stream: bool = False
 
 
 @dataclass
@@ -244,6 +249,21 @@ class RecorderManager:
                 proxy_url=resolver_proxy_url,
             )
             stream_url = await self._resolve_stream_url(resolve_cmd)
+        except StreamUrlNotReadyError as exc:
+            standby_message = str(exc)
+            recording_model.update_recording_fields(
+                self.settings,
+                recording_id,
+                status="standby_no_stream",
+                error_message=standby_message,
+            )
+            return EnsureRecordingResult(
+                active=False,
+                started=False,
+                recording_id=recording_id,
+                error=standby_message,
+                standby_no_stream=True,
+            )
         except ValueError as exc:
             error_message = str(exc)
             recording_model.update_recording_fields(
@@ -676,7 +696,7 @@ class RecorderManager:
             reason = "streamlink로 스트림 URL 해석에 실패했습니다."
             if stderr_tail:
                 reason = f"{reason} stderr: {stderr_tail}"
-            raise ValueError(reason)
+            raise StreamUrlNotReadyError(reason)
 
         if not stream_url.startswith(("http://", "https://")):
             raise ValueError("streamlink resolver가 HTTP URL이 아닌 값을 반환했습니다.")
