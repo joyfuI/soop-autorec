@@ -103,14 +103,18 @@ docker compose up -d
 - `${userId}`: SOOP `user_id`
 - `${title}`: 방송 제목
 - `${broadNo}`: 방송 번호
-- `${YYMMDD}`: 방송 시작 시각 기준 날짜(`yyMMdd`)
-- `${HHmmss}`: 방송 시작 시각 기준 시간(`HHmmss`)
+- `${YY}`: 방송 시작 시각 기준 연도 2자리(`yy`)
+- `${MM}`: 방송 시작 시각 기준 월 2자리(`MM`)
+- `${DD}`: 방송 시작 시각 기준 일 2자리(`dd`)
+- `${HH}`: 방송 시작 시각 기준 시 2자리(`HH`)
+- `${mm}`: 방송 시작 시각 기준 분 2자리(`mm`)
+- `${ss}`: 방송 시작 시각 기준 초 2자리(`ss`)
 - 최종 파일 경로가 이미 있으면 자동으로 ` (1)`, ` (2)` 접미사를 붙여 다른 파일명으로 저장합니다.
 
 예시:
 
 ```text
-${displayName}/${YYMMDD} ${title} [${broadNo}].mp4
+${displayName}/${YY}${MM}${DD} ${title} [${broadNo}].mp4
 ```
 
 ## 운영/자동화 API

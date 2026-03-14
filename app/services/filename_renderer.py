@@ -27,8 +27,12 @@ class FilenameRenderer:
             "${userId}": user_id,
             "${title}": safe_title,
             "${broadNo}": str(broad_no),
-            "${YYMMDD}": local_dt.strftime("%y%m%d"),
-            "${HHmmss}": local_dt.strftime("%H%M%S"),
+            "${YY}": local_dt.strftime("%y"),
+            "${MM}": local_dt.strftime("%m"),
+            "${DD}": local_dt.strftime("%d"),
+            "${HH}": local_dt.strftime("%H"),
+            "${mm}": local_dt.strftime("%M"),
+            "${ss}": local_dt.strftime("%S"),
         }
 
         output = template

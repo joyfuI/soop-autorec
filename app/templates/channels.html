@@ -284,7 +284,7 @@
               </div>
               <div style="grid-column: 1 / -1;">
                 <label for="output_template">파일명 템플릿</label>
-                <input id="output_template" name="output_template" placeholder="${displayName}/${YYMMDD} ${title} [${broadNo}].mp4" />
+                <input id="output_template" name="output_template" placeholder="${displayName}/${YY}${MM}${DD} ${title} [${broadNo}].mp4" />
               </div>
               <div class="check">
                 <input id="enabled" name="enabled" type="checkbox" checked />
@@ -297,9 +297,10 @@
           <p class="hint">
             파일명 템플릿 변수:
             <code>${displayName}</code>, <code>${userId}</code>, <code>${title}</code>,
-            <code>${broadNo}</code>, <code>${YYMMDD}</code>, <code>${HHmmss}</code>
+            <code>${broadNo}</code>, <code>${YY}</code>, <code>${MM}</code>, <code>${DD}</code>,
+            <code>${HH}</code>, <code>${mm}</code>, <code>${ss}</code>
           </p>
-          <p class="hint">예시: <code>${displayName}/${YYMMDD} ${title} [${broadNo}].mp4</code></p>
+          <p class="hint">예시: <code>${displayName}/${YY}${MM}${DD} ${title} [${broadNo}].mp4</code></p>
         </section>
 
         <section class="panel">
@@ -370,7 +371,7 @@
                                 id="output_template_{{ c.id }}"
                                 name="output_template"
                                 value="{{ c.output_template or '' }}"
-                                placeholder="${displayName}/${YYMMDD} ${title} [${broadNo}].mp4"
+                                placeholder="${displayName}/${YY}${MM}${DD} ${title} [${broadNo}].mp4"
                               />
                             </div>
                           </div>

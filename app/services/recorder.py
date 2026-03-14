@@ -21,7 +21,7 @@ from app.utils.time import now_utc
 
 logger = logging.getLogger(__name__)
 FORCE_KILL_DELAY_SEC = 30
-DEFAULT_OUTPUT_TEMPLATE = "${displayName}/${YYMMDD} ${title} [${broadNo}].mp4"
+DEFAULT_OUTPUT_TEMPLATE = "${displayName}/${YY}${MM}${DD} ${title} [${broadNo}].mp4"
 MAX_FINAL_PATH_CANDIDATES = 500
 
 
