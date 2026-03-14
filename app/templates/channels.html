@@ -365,7 +365,7 @@
                               <input
                                 id="stream_password_{{ c.id }}"
                                 name="stream_password"
-                                placeholder="변경 시에만 입력"
+                                value="{{ c.stream_password or '' }}"
                               />
                             </div>
                             <div style="grid-column: 1 / -1;">
@@ -380,10 +380,6 @@
                             <div class="check">
                               <input id="enabled_{{ c.id }}" name="enabled" type="checkbox" {% if c.enabled %}checked{% endif %} />
                               <label for="enabled_{{ c.id }}">활성화</label>
-                            </div>
-                            <div class="check">
-                              <input id="clear_stream_password_{{ c.id }}" name="clear_stream_password" type="checkbox" />
-                              <label for="clear_stream_password_{{ c.id }}">방송 비밀번호 삭제</label>
                             </div>
                           </div>
                           <button class="btn" type="submit">저장</button>

@@ -151,7 +151,7 @@ async def create_channel(
             display_name=display_name.strip() or None,
             enabled=enabled == "on",
             output_template=output_template.strip() or None,
-            stream_password_enc=stream_password_value,
+            stream_password=stream_password_value,
             preferred_quality=preferred_quality.strip() or "best",
         )
         return _build_redirect(
@@ -171,7 +171,6 @@ async def update_channel(
     enabled: str | None = Form(default=None),
     output_template: str = Form(default=""),
     stream_password: str = Form(default=""),
-    clear_stream_password: str | None = Form(default=None),
     preferred_quality: str = Form(default=""),
     tab: str = Form(default="channel"),
 ) -> RedirectResponse:
@@ -181,12 +180,7 @@ async def update_channel(
     if channel is None:
         return _build_redirect("/channels", error="채널을 찾을 수 없습니다.", tab=tab_key)
 
-    if clear_stream_password == "on":
-        stream_password_value: str | None = None
-    elif stream_password.strip():
-        stream_password_value = stream_password.strip()
-    else:
-        stream_password_value = channel["stream_password_enc"]
+    stream_password_value = stream_password.strip() or None
 
     updated = channel_model.update_channel(
         settings,
@@ -194,7 +188,7 @@ async def update_channel(
         display_name=display_name.strip() or None,
         enabled=enabled == "on",
         output_template=output_template.strip() or None,
-        stream_password_enc=stream_password_value,
+        stream_password=stream_password_value,
         preferred_quality=preferred_quality.strip() or str(channel["preferred_quality"] or "best"),
     )
     if updated is None:
@@ -226,7 +220,7 @@ async def toggle_channel(
         display_name=channel["display_name"],
         enabled=next_enabled,
         output_template=channel["output_template"],
-        stream_password_enc=channel["stream_password_enc"],
+        stream_password=channel["stream_password"],
         preferred_quality=channel["preferred_quality"],
     )
 
@@ -338,3 +332,4 @@ async def restart_system(
         message="재시작을 요청했습니다. 잠시 후 다시 접속해주세요.",
         tab=tab_key,
     )
+
