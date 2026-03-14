@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import Settings
-from app.utils.time import now_utc
+from app.utils.time import now_utc, to_timezone
 
 EVENT_LOG_RELATIVE_PATH = Path("logs/events.jsonl")
 EVENT_LOG_RETENTION_DAYS = 30
@@ -187,7 +187,7 @@ def add_event_log(
 ) -> int:
     global _EVENT_LOG_NEXT_ID
 
-    timestamp = now_utc().isoformat()
+    timestamp = to_timezone(now_utc(), settings.timezone).isoformat(timespec="seconds")
     path = _event_log_path(settings)
 
     with _EVENT_LOG_LOCK:
