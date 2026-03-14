@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Any
 
@@ -8,7 +8,7 @@ from app.utils.time import now_utc
 
 CHANNEL_COLUMNS = (
     "id, user_id, display_name, enabled, output_template, "
-    "stream_password_enc, preferred_quality, last_status, last_broad_no, "
+    "stream_password, preferred_quality, last_status, last_broad_no, "
     "last_probe_at, last_error, offline_streak, updated_at"
 )
 
@@ -20,7 +20,7 @@ def _row_to_channel_dict(row: Any) -> dict[str, Any]:
         "display_name": row["display_name"],
         "enabled": bool(row["enabled"]),
         "output_template": row["output_template"],
-        "stream_password_enc": row["stream_password_enc"],
+        "stream_password": row["stream_password"],
         "preferred_quality": row["preferred_quality"],
         "last_status": row["last_status"],
         "last_broad_no": row["last_broad_no"],
@@ -60,7 +60,7 @@ def create_channel(
     display_name: str | None,
     enabled: bool,
     output_template: str | None,
-    stream_password_enc: str | None,
+    stream_password: str | None,
     preferred_quality: str,
 ) -> dict[str, Any]:
     timestamp = now_utc().isoformat()
@@ -70,7 +70,7 @@ def create_channel(
             """
             INSERT INTO channels (
               user_id, display_name, enabled, output_template,
-              stream_password_enc, preferred_quality, last_status, updated_at
+              stream_password, preferred_quality, last_status, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, 'offline', ?)
             """,
             (
@@ -78,7 +78,7 @@ def create_channel(
                 display_name,
                 1 if enabled else 0,
                 output_template,
-                stream_password_enc,
+                stream_password,
                 preferred_quality,
                 timestamp,
             ),
@@ -99,7 +99,7 @@ def update_channel(
     display_name: str | None,
     enabled: bool,
     output_template: str | None,
-    stream_password_enc: str | None,
+    stream_password: str | None,
     preferred_quality: str,
 ) -> dict[str, Any] | None:
     timestamp = now_utc().isoformat()
@@ -112,7 +112,7 @@ def update_channel(
               display_name = ?,
               enabled = ?,
               output_template = ?,
-              stream_password_enc = ?,
+              stream_password = ?,
               preferred_quality = ?,
               updated_at = ?
             WHERE id = ?
@@ -121,7 +121,7 @@ def update_channel(
                 display_name,
                 1 if enabled else 0,
                 output_template,
-                stream_password_enc,
+                stream_password,
                 preferred_quality,
                 timestamp,
                 channel_id,
@@ -177,3 +177,4 @@ def update_probe_state(
             ),
         )
         conn.commit()
+

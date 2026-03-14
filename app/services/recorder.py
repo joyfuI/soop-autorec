@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import logging
@@ -708,7 +708,7 @@ class RecorderManager:
         if username and password:
             args.extend(["--soop-username", username, "--soop-password", password])
 
-        stream_password = str(channel.get("stream_password_enc") or "").strip()
+        stream_password = str(channel.get("stream_password") or "").strip()
         if stream_password:
             args.extend(["--soop-stream-password", stream_password])
 
@@ -777,3 +777,4 @@ class RecorderManager:
         if len(trimmed) <= max_chars:
             return trimmed
         return trimmed[-max_chars:]
+

@@ -1,4 +1,4 @@
-import sqlite3
+﻿import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS channels (
   display_name TEXT,
   enabled INTEGER NOT NULL DEFAULT 1,
   output_template TEXT,
-  stream_password_enc TEXT,
+  stream_password TEXT,
   preferred_quality TEXT NOT NULL DEFAULT 'best',
   last_status TEXT NOT NULL DEFAULT 'offline',
   last_broad_no INTEGER,
@@ -123,3 +123,4 @@ def database_ping(settings: Settings) -> bool:
         return True
     except sqlite3.Error:
         return False
+

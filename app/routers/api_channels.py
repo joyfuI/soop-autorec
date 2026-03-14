@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import sqlite3
 
@@ -32,7 +32,7 @@ async def api_get_channel(request: Request, channel_id: int) -> dict:
 async def api_create_channel(request: Request, payload: ChannelCreate) -> dict:
     settings = request.app.state.settings
     stream_password = (
-        payload.stream_password_enc.strip() if payload.stream_password_enc else None
+        payload.stream_password.strip() if payload.stream_password else None
     ) or None
 
     try:
@@ -42,7 +42,7 @@ async def api_create_channel(request: Request, payload: ChannelCreate) -> dict:
             display_name=payload.display_name.strip() if payload.display_name else None,
             enabled=payload.enabled,
             output_template=payload.output_template.strip() if payload.output_template else None,
-            stream_password_enc=stream_password,
+            stream_password=stream_password,
             preferred_quality=payload.preferred_quality.strip() or "best",
         )
     except sqlite3.IntegrityError as exc:
@@ -56,7 +56,7 @@ async def api_create_channel(request: Request, payload: ChannelCreate) -> dict:
 async def api_update_channel(request: Request, channel_id: int, payload: ChannelUpdate) -> dict:
     settings = request.app.state.settings
     stream_password = (
-        payload.stream_password_enc.strip() if payload.stream_password_enc else None
+        payload.stream_password.strip() if payload.stream_password else None
     ) or None
 
     updated = channel_model.update_channel(
@@ -65,7 +65,7 @@ async def api_update_channel(request: Request, channel_id: int, payload: Channel
         display_name=payload.display_name.strip() if payload.display_name else None,
         enabled=payload.enabled,
         output_template=payload.output_template.strip() if payload.output_template else None,
-        stream_password_enc=stream_password,
+        stream_password=stream_password,
         preferred_quality=payload.preferred_quality.strip() or "best",
     )
     if updated is None:
@@ -85,3 +85,4 @@ async def api_delete_channel(request: Request, channel_id: int) -> None:
             status_code=status.HTTP_404_NOT_FOUND,
             detail="채널을 찾을 수 없습니다.",
         )
+

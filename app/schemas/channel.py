@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
@@ -8,7 +8,7 @@ class ChannelBase(BaseModel):
     display_name: str | None = Field(default=None, max_length=120)
     enabled: bool = True
     output_template: str | None = Field(default=None, max_length=500)
-    stream_password_enc: str | None = Field(default=None, max_length=255)
+    stream_password: str | None = Field(default=None, max_length=255)
     preferred_quality: str = Field(default="best", max_length=30)
 
 
@@ -20,7 +20,7 @@ class ChannelUpdate(BaseModel):
     display_name: str | None = Field(default=None, max_length=120)
     enabled: bool = True
     output_template: str | None = Field(default=None, max_length=500)
-    stream_password_enc: str | None = Field(default=None, max_length=255)
+    stream_password: str | None = Field(default=None, max_length=255)
     preferred_quality: str = Field(default="best", max_length=30)
 
 
@@ -30,7 +30,7 @@ class ChannelRead(BaseModel):
     display_name: str | None
     enabled: bool
     output_template: str | None
-    stream_password_enc: str | None
+    stream_password: str | None
     preferred_quality: str
     last_status: str
     last_broad_no: int | None
@@ -38,3 +38,4 @@ class ChannelRead(BaseModel):
     last_error: str | None
     offline_streak: int
     updated_at: str
+
