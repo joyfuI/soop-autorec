@@ -16,6 +16,7 @@
 - `broad` probe 응답이 빈 body면 오류가 아니라 정상 `OFFLINE`이다.
 - `PROBE_ERROR`만으로 녹화를 즉시 중단하지 않는다.
 - 중복 녹화/세션 식별 키는 `(userId, broadNo)`다.
+- 최종 출력 파일명이 충돌하면 remux 단계에서 ` (1)`, ` (2)` 접미사를 붙여 저장하고 기존 파일은 덮어쓰지 않는다.
 - 재생 URL은 `https://play.sooplive.co.kr/{userId}` 고정이다.
 - 프록시 설정은 환경변수가 아니라 DB(`control_proxy_url`)로만 관리한다.
 - 프록시는 `streamlink --stream-url` 해석 1회에만 적용하고, 이후 manifest/key/segment 요청은 direct다.

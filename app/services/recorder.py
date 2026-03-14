@@ -22,6 +22,7 @@ from app.utils.time import now_utc
 logger = logging.getLogger(__name__)
 FORCE_KILL_DELAY_SEC = 30
 DEFAULT_OUTPUT_TEMPLATE = "${displayName}/${YYMMDD} ${title} [${broadNo}].mp4"
+MAX_FINAL_PATH_CANDIDATES = 500
 
 
 @dataclass
@@ -399,7 +400,7 @@ class RecorderManager:
 
         await self.relay_manager.remove_session(handle.relay_session_token)
 
-        remux_result = await self._run_remux(
+        remux_result, resolved_final_path = await self._run_remux(
             recording_id=handle.recording_id,
             temp_path=handle.temp_path,
             final_path=handle.final_path,
@@ -410,6 +411,12 @@ class RecorderManager:
         )
 
         if remux_result:
+            requested_final_path = handle.final_path
+            handle.final_path = resolved_final_path
+            payload: dict[str, Any] = {"final_path": str(handle.final_path)}
+            if handle.final_path != requested_final_path:
+                payload["requested_final_path"] = str(requested_final_path)
+                payload["renamed_due_to_collision"] = True
             event_log_model.add_event_log(
                 self.settings,
                 level="info",
@@ -417,7 +424,7 @@ class RecorderManager:
                 channel_id=handle.channel_id,
                 recording_id=handle.recording_id,
                 message="녹화 및 remux가 완료되었습니다.",
-                payload={"final_path": str(handle.final_path)},
+                payload=payload,
             )
         else:
             event_log_model.add_event_log(
@@ -445,7 +452,7 @@ class RecorderManager:
         stop_reason: str | None,
         recorder_exit_code: int | None,
         recorder_stderr: str,
-    ) -> bool:
+    ) -> tuple[bool, Path]:
         if not temp_path.exists() or temp_path.stat().st_size == 0:
             message = "녹화 프로세스가 종료됐지만 녹화 데이터가 생성되지 않았습니다."
             if recorder_stderr:
@@ -456,7 +463,7 @@ class RecorderManager:
                 status="failed",
                 error_message=message,
             )
-            return False
+            return False, final_path
 
         recording_model.update_recording_fields(
             self.settings,
@@ -465,79 +472,104 @@ class RecorderManager:
             error_message=None,
         )
 
-        ffmpeg_cmd = [
-            self.settings.ffmpeg_binary,
-            "-y",
-            "-i",
-            str(temp_path),
-            "-c",
-            "copy",
-            str(final_path),
-        ]
+        for index in range(MAX_FINAL_PATH_CANDIDATES):
+            candidate_path = self._build_final_output_candidate(base_path=final_path, index=index)
+            if candidate_path.exists():
+                continue
 
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *ffmpeg_cmd,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except OSError as exc:
-            recording_model.update_recording_fields(
-                self.settings,
-                recording_id,
-                status="failed",
-                error_message=f"ffmpeg 실행에 실패했습니다: {exc}",
-            )
-            return False
+            ffmpeg_cmd = [
+                self.settings.ffmpeg_binary,
+                "-n",
+                "-i",
+                str(temp_path),
+                "-c",
+                "copy",
+                str(candidate_path),
+            ]
 
-        ffmpeg_stderr_bytes = b""
-        if process.stderr is not None:
-            _, ffmpeg_stderr_bytes = await process.communicate()
-        else:
-            await process.wait()
-
-        ffmpeg_exit_code = process.returncode
-        ffmpeg_stderr = ffmpeg_stderr_bytes.decode("utf-8", errors="ignore")
-        ffmpeg_tail = self._tail_text(ffmpeg_stderr)
-
-        if ffmpeg_exit_code == 0 and final_path.exists() and final_path.stat().st_size > 0:
-            file_size = final_path.stat().st_size
-            recording_model.update_recording_fields(
-                self.settings,
-                recording_id,
-                status="completed",
-                ffmpeg_exit_code=ffmpeg_exit_code,
-                file_size_bytes=file_size,
-                final_path=str(final_path),
-                error_message=None,
-            )
             try:
-                temp_path.unlink(missing_ok=True)
-            except OSError:
-                logger.warning("임시 파일 삭제에 실패했습니다: %s", temp_path)
-            return True
+                process = await asyncio.create_subprocess_exec(
+                    *ffmpeg_cmd,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            except OSError as exc:
+                recording_model.update_recording_fields(
+                    self.settings,
+                    recording_id,
+                    status="failed",
+                    error_message=f"ffmpeg 실행에 실패했습니다: {exc}",
+                )
+                return False, final_path
 
-        failure_status = (
-            "partial"
-            if final_path.exists() and final_path.stat().st_size > 0
-            else "failed"
+            ffmpeg_stderr_bytes = b""
+            if process.stderr is not None:
+                _, ffmpeg_stderr_bytes = await process.communicate()
+            else:
+                await process.wait()
+
+            ffmpeg_exit_code = process.returncode
+            ffmpeg_stderr = ffmpeg_stderr_bytes.decode("utf-8", errors="ignore")
+            ffmpeg_tail = self._tail_text(ffmpeg_stderr)
+
+            if (
+                ffmpeg_exit_code == 0
+                and candidate_path.exists()
+                and candidate_path.stat().st_size > 0
+            ):
+                file_size = candidate_path.stat().st_size
+                recording_model.update_recording_fields(
+                    self.settings,
+                    recording_id,
+                    status="completed",
+                    ffmpeg_exit_code=ffmpeg_exit_code,
+                    file_size_bytes=file_size,
+                    final_path=str(candidate_path),
+                    error_message=None,
+                )
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("임시 파일 삭제에 실패했습니다: %s", temp_path)
+                return True, candidate_path
+
+            if self._is_ffmpeg_output_exists_error(ffmpeg_stderr):
+                continue
+
+            failure_status = (
+                "partial"
+                if candidate_path.exists() and candidate_path.stat().st_size > 0
+                else "failed"
+            )
+            reason = "ffmpeg remux에 실패했습니다"
+            if ffmpeg_tail:
+                reason = f"{reason}: {ffmpeg_tail}"
+            if stop_requested and stop_reason:
+                reason = f"{reason} (stop_reason={stop_reason})"
+            if recorder_exit_code not in (0, None):
+                reason = f"{reason}; record_exit_code={recorder_exit_code}"
+
+            recording_model.update_recording_fields(
+                self.settings,
+                recording_id,
+                status=failure_status,
+                ffmpeg_exit_code=ffmpeg_exit_code,
+                final_path=str(candidate_path),
+                error_message=reason,
+            )
+            return False, candidate_path
+
+        reason = (
+            "ffmpeg remux 출력 경로가 모두 사용 중이라 저장에 실패했습니다. "
+            f"확인한 후보 수: {MAX_FINAL_PATH_CANDIDATES}"
         )
-        reason = "ffmpeg remux에 실패했습니다"
-        if ffmpeg_tail:
-            reason = f"{reason}: {ffmpeg_tail}"
-        if stop_requested and stop_reason:
-            reason = f"{reason} (stop_reason={stop_reason})"
-        if recorder_exit_code not in (0, None):
-            reason = f"{reason}; record_exit_code={recorder_exit_code}"
-
         recording_model.update_recording_fields(
             self.settings,
             recording_id,
-            status=failure_status,
-            ffmpeg_exit_code=ffmpeg_exit_code,
+            status="failed",
             error_message=reason,
         )
-        return False
+        return False, final_path
 
     async def _force_kill_if_needed(self, handle: RecordingHandle) -> None:
         await asyncio.sleep(FORCE_KILL_DELAY_SEC)
@@ -553,6 +585,15 @@ class RecorderManager:
         if not missing:
             return None
         return f"필수 바이너리를 찾을 수 없습니다: {', '.join(missing)}"
+
+    def _build_final_output_candidate(self, *, base_path: Path, index: int) -> Path:
+        if index <= 0:
+            return base_path
+        return base_path.with_name(f"{base_path.stem} ({index}){base_path.suffix}")
+
+    def _is_ffmpeg_output_exists_error(self, stderr_text: str) -> bool:
+        normalized = stderr_text.lower()
+        return "already exists" in normalized
 
     def _render_relative_output_path(
         self,
