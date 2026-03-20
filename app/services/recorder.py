@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import Settings
+from app.models import channel as channel_model
 from app.models import event_log as event_log_model
 from app.models import recording as recording_model
 from app.models import settings as settings_model
@@ -429,6 +430,16 @@ class RecorderManager:
                 payload=payload,
             )
         else:
+            error_message = "녹화가 실패 상태로 종료되었습니다."
+            latest_recording = recording_model.get_recording_by_id(
+                self.settings,
+                handle.recording_id,
+            )
+            if latest_recording is not None:
+                latest_error = str(latest_recording.get("error_message") or "").strip()
+                if latest_error:
+                    error_message = latest_error
+
             event_log_model.add_event_log(
                 self.settings,
                 level="error",
@@ -437,6 +448,11 @@ class RecorderManager:
                 recording_id=handle.recording_id,
                 message="녹화가 실패 상태로 종료되었습니다.",
                 payload={"exit_code": exit_code, "stderr_tail": stderr_tail},
+            )
+            channel_model.update_last_error(
+                self.settings,
+                handle.channel_id,
+                last_error=error_message,
             )
 
         async with self._lock:

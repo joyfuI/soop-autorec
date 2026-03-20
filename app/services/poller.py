@@ -288,7 +288,6 @@ class Supervisor:
                 last_status=hold_status,
                 last_broad_no=broad_no,
                 last_probe_at=now_utc().isoformat(),
-                last_error=None,
                 offline_streak=0,
             )
             return
@@ -310,7 +309,6 @@ class Supervisor:
                 last_status=next_status,
                 last_broad_no=broad_no,
                 last_probe_at=now_utc().isoformat(),
-                last_error=None,
                 offline_streak=0,
             )
             return
@@ -459,7 +457,6 @@ class Supervisor:
             last_status=status,
             last_broad_no=channel.get("last_broad_no"),
             last_probe_at=now_iso,
-            last_error=None,
             offline_streak=offline_streak,
         )
 

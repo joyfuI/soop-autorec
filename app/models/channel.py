@@ -12,6 +12,8 @@ CHANNEL_COLUMNS = (
     "last_probe_at, last_error, offline_streak, updated_at"
 )
 
+_UNSET = object()
+
 
 def _row_to_channel_dict(row: Any) -> dict[str, Any]:
     return {
@@ -149,8 +151,37 @@ def update_probe_state(
     last_status: str,
     last_broad_no: int | None,
     last_probe_at: str,
-    last_error: str | None,
+    last_error: str | None | object = _UNSET,
     offline_streak: int,
+) -> None:
+    timestamp = now_utc().isoformat()
+    set_parts = [
+        "last_status = ?",
+        "last_broad_no = ?",
+        "last_probe_at = ?",
+    ]
+    values: list[Any] = [last_status, last_broad_no, last_probe_at]
+
+    if last_error is not _UNSET:
+        set_parts.append("last_error = ?")
+        values.append(last_error)
+
+    set_parts.extend(["offline_streak = ?", "updated_at = ?"])
+    values.extend([offline_streak, timestamp, channel_id])
+
+    with connect(settings) as conn:
+        conn.execute(
+            f"UPDATE channels SET {', '.join(set_parts)} WHERE id = ?",
+            values,
+        )
+        conn.commit()
+
+
+def update_last_error(
+    settings: Settings,
+    channel_id: int,
+    *,
+    last_error: str | None,
 ) -> None:
     timestamp = now_utc().isoformat()
     with connect(settings) as conn:
@@ -158,23 +189,11 @@ def update_probe_state(
             """
             UPDATE channels
             SET
-              last_status = ?,
-              last_broad_no = ?,
-              last_probe_at = ?,
               last_error = ?,
-              offline_streak = ?,
               updated_at = ?
             WHERE id = ?
             """,
-            (
-                last_status,
-                last_broad_no,
-                last_probe_at,
-                last_error,
-                offline_streak,
-                timestamp,
-                channel_id,
-            ),
+            (last_error, timestamp, channel_id),
         )
         conn.commit()
 
