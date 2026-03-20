@@ -30,19 +30,50 @@
       .top {
         display: flex;
         justify-content: space-between;
-        align-items: center;
-        margin-bottom: 16px;
+        align-items: flex-end;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-bottom: 12px;
+      }
+      .top-left {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
       }
       h1 {
         margin: 0;
         font-size: 1.35rem;
       }
-      .nav {
+      .page-nav {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .page-link {
+        font: inherit;
+        text-decoration: none;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 6px 12px;
+        color: var(--ink);
+        font-size: 0.88rem;
+      }
+      .page-link.active {
+        color: #fff;
+        border-color: #0f766e;
+        background: #0f766e;
+        font-weight: 600;
+      }
+      .top-actions {
         display: flex;
         gap: 8px;
       }
-      .nav form { margin: 0; }
+      .top-actions form { margin: 0; }
       .btn-link {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
         font: inherit;
         text-decoration: none;
         background: var(--panel);
@@ -180,9 +211,14 @@
       {%- endmacro %}
 
       <header class="top">
-        <h1>대시보드</h1>
-        <nav class="nav">
-          <a class="btn-link" href="/channels">채널 관리</a>
+        <div class="top-left">
+          <h1>대시보드</h1>
+          <nav class="page-nav" aria-label="전역 페이지">
+            <a class="page-link active" href="/">대시보드</a>
+            <a class="page-link" href="/channels">채널 관리</a>
+          </nav>
+        </div>
+        <div class="top-actions">
           <form
             method="post"
             action="/system/restart"
@@ -193,7 +229,7 @@
             <input type="hidden" name="return_to" value="/" />
             <button class="btn-link danger" type="submit">서버 재시작</button>
           </form>
-        </nav>
+        </div>
       </header>
 
       {% if message %}
