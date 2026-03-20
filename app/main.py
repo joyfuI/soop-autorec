@@ -8,11 +8,9 @@ from app.db import initialize_database
 from app.routers.api_channels import router as channels_router
 from app.routers.api_events import router as events_router
 from app.routers.api_recordings import router as recordings_router
-from app.routers.api_relay import router as relay_router
 from app.routers.api_settings import router as settings_router
 from app.routers.api_system import router as system_router
 from app.routers.ui import router as ui_router
-from app.services.hls_relay import HlsRelayManager
 from app.services.poller import Supervisor
 
 
@@ -20,16 +18,9 @@ from app.services.poller import Supervisor
 async def lifespan(application: FastAPI):
     settings = get_settings()
     initialize_database(settings)
-    relay_manager = HlsRelayManager()
-
-    supervisor = Supervisor(
-        settings,
-        relay_manager=relay_manager,
-        relay_base_url=f"http://127.0.0.1:{settings.port}",
-    )
+    supervisor = Supervisor(settings)
 
     application.state.settings = settings
-    application.state.relay_manager = relay_manager
     application.state.supervisor = supervisor
 
     await supervisor.start()
@@ -47,7 +38,6 @@ def create_app() -> FastAPI:
     app.include_router(recordings_router)
     app.include_router(events_router)
     app.include_router(settings_router)
-    app.include_router(relay_router)
 
     @app.get("/health", tags=["system"])
     async def health() -> dict:

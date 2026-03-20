@@ -14,7 +14,6 @@ from app.models import event_log as event_log_model
 from app.models import recording as recording_model
 from app.models import settings as settings_model
 from app.services.filename_renderer import FilenameRenderer
-from app.services.hls_relay import HlsRelayManager
 from app.services.playback_url import build_playback_url
 from app.utils.sanitize import sanitize_filename_component
 from app.utils.time import now_utc
@@ -48,7 +47,6 @@ class RecordingHandle:
     final_path: Path
     process: asyncio.subprocess.Process
     watch_task: asyncio.Task[None]
-    relay_session_token: str
     stop_requested: bool = False
     stop_reason: str | None = None
 
@@ -57,13 +55,8 @@ class RecorderManager:
     def __init__(
         self,
         settings: Settings,
-        *,
-        relay_manager: HlsRelayManager,
-        relay_base_url: str,
     ) -> None:
         self.settings = settings
-        self.relay_manager = relay_manager
-        self.relay_base_url = relay_base_url.rstrip("/")
         self._filename_renderer = FilenameRenderer(settings.timezone)
         self._handles: dict[int, RecordingHandle] = {}
         self._lock = asyncio.Lock()
@@ -288,15 +281,9 @@ class RecorderManager:
             )
 
         # Proxy is used only for one-time stream URL resolution.
-        # Ongoing playlist/key fetches during recording are direct.
-        relay_session_token = await self.relay_manager.create_session(proxy_url=None)
-        relay_input_url = self.relay_manager.build_playlist_url(
-            relay_base_url=self.relay_base_url,
-            token=relay_session_token,
-            upstream_url=stream_url,
-        )
+        # Recording traffic after resolution is direct.
         cmd = self._build_record_cmd(
-            relay_input_url=relay_input_url,
+            input_url=stream_url,
             temp_path=temp_path,
         )
 
@@ -321,7 +308,6 @@ class RecorderManager:
                 stderr=asyncio.subprocess.PIPE,
             )
         except OSError as exc:
-            await self.relay_manager.remove_session(relay_session_token)
             error_message = f"녹화 프로세스 시작에 실패했습니다: {exc}"
             recording_model.update_recording_fields(
                 self.settings,
@@ -358,12 +344,11 @@ class RecorderManager:
             event_type="record_start",
             channel_id=channel_id,
             recording_id=recording_id,
-            message="중계 입력 URL로 녹화를 시작했습니다.",
+            message="스트림 URL로 녹화를 시작했습니다.",
             payload={
                 "playback_url": playback_url,
                 "quality": quality,
                 "proxy_enabled_for_resolve": resolver_proxy_url is not None,
-                "relay_input_url": relay_input_url,
                 "temp_path": str(temp_path),
                 "final_path": str(final_path),
             },
@@ -382,7 +367,6 @@ class RecorderManager:
             final_path=final_path,
             process=process,
             watch_task=watch_task,
-            relay_session_token=relay_session_token,
         )
 
         async with self._lock:
@@ -417,8 +401,6 @@ class RecorderManager:
             handle.recording_id,
             recording_stopped_at=stopped_at,
         )
-
-        await self.relay_manager.remove_session(handle.relay_session_token)
 
         remux_result, resolved_final_path = await self._run_remux(
             recording_id=handle.recording_id,
@@ -706,14 +688,14 @@ class RecorderManager:
     def _build_record_cmd(
         self,
         *,
-        relay_input_url: str,
+        input_url: str,
         temp_path: Path,
     ) -> list[str]:
         return [
             self.settings.ffmpeg_binary,
             "-y",
             "-i",
-            relay_input_url,
+            input_url,
             "-c",
             "copy",
             str(temp_path),

@@ -11,7 +11,6 @@ from app.config import Settings
 from app.models import channel as channel_model
 from app.models import event_log as event_log_model
 from app.models import recording as recording_model
-from app.services.hls_relay import HlsRelayManager
 from app.services.recorder import RecorderManager
 from app.services.soop_probe import ProbeResult, ProbeStatus, probe_channel
 from app.utils.time import now_utc
@@ -39,17 +38,10 @@ class Supervisor:
     def __init__(
         self,
         settings: Settings,
-        *,
-        relay_manager: HlsRelayManager,
-        relay_base_url: str,
     ) -> None:
         self.settings = settings
         self.state = SupervisorState()
-        self.recorder = RecorderManager(
-            settings,
-            relay_manager=relay_manager,
-            relay_base_url=relay_base_url,
-        )
+        self.recorder = RecorderManager(settings)
         self._stop_event = asyncio.Event()
         self._wake_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None

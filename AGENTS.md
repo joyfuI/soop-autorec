@@ -8,7 +8,7 @@
 
 - 서비스: FastAPI + 관리 UI + 백그라운드 supervisor
 - 감지 소스: SOOP `broad` 폴링 API
-- 녹화 파이프라인: `streamlink --stream-url` 해석 -> 내부 HLS relay -> `ffmpeg` 녹화 -> `ffmpeg -c copy` remux
+- 녹화 파이프라인: `streamlink --stream-url` 해석 -> `ffmpeg` 녹화 -> `ffmpeg -c copy` remux
 - 저장소: SQLite(`channels`, `settings`, `recordings`) + JSONL 이벤트 로그(`./data/logs/events.jsonl`)
 
 ## 코드로 바로 안 보이는 운영 규칙
