@@ -184,7 +184,6 @@
         <article class="kpi"><div class="label">활성 채널</div><div class="value">{{ summary.enabled_channels }}</div></article>
         <article class="kpi"><div class="label">녹화 중 채널</div><div class="value">{{ summary.recording_channels }}</div></article>
         <article class="kpi"><div class="label">오류 채널</div><div class="value">{{ summary.error_channels }}</div></article>
-        <article class="kpi"><div class="label">Supervisor 루프 횟수</div><div class="value">{{ status.iteration_count }}</div></article>
         <article class="kpi"><div class="label">활성 녹화 프로세스</div><div class="value">{{ status.active_recorder_count }}</div></article>
         <article class="kpi"><div class="label">최근 프로브 오류</div><div class="value">{{ status.last_probe_error_count }}</div></article>
       </section>
@@ -362,9 +361,12 @@
         let fallbackTimer = null;
         let reloadScheduled = false;
 
-        let baselineIteration = null;
         let baselineActiveRecorder = null;
-        let baselineLatestEventId = null;
+        let baselineProbeError = null;
+        let baselineEventLogMtimeNs = null;
+        let baselineRecordingMaxId = null;
+        let baselineChannelMaxUpdatedAt = null;
+        let baselineChannelCount = null;
 
         function scheduleReload() {
           if (reloadScheduled) return;
@@ -376,39 +378,45 @@
 
         async function pollFallbackOnce() {
           try {
-            const [statusRes, eventsRes] = await Promise.all([
-              fetch("/api/system/status", { cache: "no-store" }),
-              fetch("/api/events?limit=1", { cache: "no-store" }),
-            ]);
-            if (!statusRes.ok || !eventsRes.ok) return;
+            const statusRes = await fetch("/api/system/status", { cache: "no-store" });
+            if (!statusRes.ok) return;
 
             const status = await statusRes.json();
-            const events = await eventsRes.json();
-            const latestEventId =
-              Array.isArray(events) && events.length > 0 ? Number(events[0].id || 0) : 0;
-
-            const iterationCount = Number(status.iteration_count || 0);
             const activeRecorderCount = Number(status.active_recorder_count || 0);
+            const probeErrorCount = Number(status.last_probe_error_count || 0);
+            const eventLogMtimeNs = Number(status.event_log_mtime_ns || 0);
+            const recordingMaxId = Number(status.recording_max_id || 0);
+            const channelMaxUpdatedAt = String(status.channel_max_updated_at || "");
+            const channelCount = Number(status.channel_count || 0);
 
-            if (baselineIteration === null) {
-              baselineIteration = iterationCount;
+            if (baselineActiveRecorder === null) {
               baselineActiveRecorder = activeRecorderCount;
-              baselineLatestEventId = latestEventId;
+              baselineProbeError = probeErrorCount;
+              baselineEventLogMtimeNs = eventLogMtimeNs;
+              baselineRecordingMaxId = recordingMaxId;
+              baselineChannelMaxUpdatedAt = channelMaxUpdatedAt;
+              baselineChannelCount = channelCount;
               return;
             }
 
             if (
-              iterationCount !== baselineIteration ||
               activeRecorderCount !== baselineActiveRecorder ||
-              latestEventId !== baselineLatestEventId
+              probeErrorCount !== baselineProbeError ||
+              eventLogMtimeNs !== baselineEventLogMtimeNs ||
+              recordingMaxId !== baselineRecordingMaxId ||
+              channelMaxUpdatedAt !== baselineChannelMaxUpdatedAt ||
+              channelCount !== baselineChannelCount
             ) {
               scheduleReload();
               return;
             }
 
-            baselineIteration = iterationCount;
             baselineActiveRecorder = activeRecorderCount;
-            baselineLatestEventId = latestEventId;
+            baselineProbeError = probeErrorCount;
+            baselineEventLogMtimeNs = eventLogMtimeNs;
+            baselineRecordingMaxId = recordingMaxId;
+            baselineChannelMaxUpdatedAt = channelMaxUpdatedAt;
+            baselineChannelCount = channelCount;
           } catch (error) {
             // ignore and wait for next poll
           }
@@ -416,9 +424,12 @@
 
         function startFallbackPolling() {
           if (fallbackTimer !== null) return;
-          baselineIteration = null;
           baselineActiveRecorder = null;
-          baselineLatestEventId = null;
+          baselineProbeError = null;
+          baselineEventLogMtimeNs = null;
+          baselineRecordingMaxId = null;
+          baselineChannelMaxUpdatedAt = null;
+          baselineChannelCount = null;
           fallbackTimer = window.setInterval(() => {
             void pollFallbackOnce();
           }, FALLBACK_POLL_MS);
@@ -429,9 +440,12 @@
           if (fallbackTimer === null) return;
           window.clearInterval(fallbackTimer);
           fallbackTimer = null;
-          baselineIteration = null;
           baselineActiveRecorder = null;
-          baselineLatestEventId = null;
+          baselineProbeError = null;
+          baselineEventLogMtimeNs = null;
+          baselineRecordingMaxId = null;
+          baselineChannelMaxUpdatedAt = null;
+          baselineChannelCount = null;
         }
 
         function scheduleReconnect() {

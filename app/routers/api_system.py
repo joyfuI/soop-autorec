@@ -35,7 +35,15 @@ async def api_health(request: Request) -> dict:
 
 @router.get("/status")
 async def api_status(request: Request) -> dict:
+    settings = request.app.state.settings
     state = request.app.state.supervisor.state
+    (
+        event_log_size,
+        event_log_mtime_ns,
+        recording_max_id,
+        channel_max_updated_at,
+        channel_count,
+    ) = _fetch_stream_db_cursor(settings)
     return {
         "running": state.running,
         "iteration_count": state.iteration_count,
@@ -46,10 +54,15 @@ async def api_status(request: Request) -> dict:
         "last_probe_error_count": state.last_probe_error_count,
         "active_recorder_count": state.active_recorder_count,
         "last_error": state.last_error,
+        "event_log_size": event_log_size,
+        "event_log_mtime_ns": event_log_mtime_ns,
+        "recording_max_id": recording_max_id,
+        "channel_max_updated_at": channel_max_updated_at,
+        "channel_count": channel_count,
     }
 
 
-def _fetch_stream_db_cursor(settings: Settings) -> tuple[int, int, int, str]:
+def _fetch_stream_db_cursor(settings: Settings) -> tuple[int, int, int, str, int]:
     event_log_size, event_log_mtime_ns = event_log_model.get_event_log_cursor(settings)
 
     with connect(settings) as conn:
@@ -57,14 +70,22 @@ def _fetch_stream_db_cursor(settings: Settings) -> tuple[int, int, int, str]:
             "SELECT COALESCE(MAX(id), 0) AS max_id FROM recordings"
         ).fetchone()
         channel_row = conn.execute(
-            "SELECT COALESCE(MAX(updated_at), '') AS max_updated_at FROM channels"
+            "SELECT COALESCE(MAX(updated_at), '') AS max_updated_at, COUNT(*) AS channel_count "
+            "FROM channels"
         ).fetchone()
 
     recording_max_id = int(recording_row["max_id"]) if recording_row is not None else 0
     channel_max_updated_at = (
         str(channel_row["max_updated_at"]) if channel_row is not None else ""
     )
-    return event_log_size, event_log_mtime_ns, recording_max_id, channel_max_updated_at
+    channel_count = int(channel_row["channel_count"]) if channel_row is not None else 0
+    return (
+        event_log_size,
+        event_log_mtime_ns,
+        recording_max_id,
+        channel_max_updated_at,
+        channel_count,
+    )
 
 
 def _build_stream_state_key(settings: Settings, state: SupervisorState) -> tuple:
@@ -73,19 +94,16 @@ def _build_stream_state_key(settings: Settings, state: SupervisorState) -> tuple
         event_log_mtime_ns,
         recording_max_id,
         channel_max_updated_at,
+        channel_count,
     ) = _fetch_stream_db_cursor(settings)
     return (
-        state.running,
-        state.iteration_count,
-        state.last_channel_count,
-        state.last_live_count,
         state.last_probe_error_count,
         state.active_recorder_count,
-        state.last_error or "",
         event_log_size,
         event_log_mtime_ns,
         recording_max_id,
         channel_max_updated_at,
+        channel_count,
     )
 
 
