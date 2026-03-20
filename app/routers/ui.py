@@ -160,6 +160,25 @@ async def stop_dashboard_channel_recording(
             error=f"현재 중단할 녹화가 없습니다: {channel['user_id']}",
         )
 
+    broad_no_raw = channel.get("last_broad_no")
+    try:
+        hold_broad_no = int(broad_no_raw) if broad_no_raw is not None else None
+    except (TypeError, ValueError):
+        hold_broad_no = None
+
+    if hold_broad_no is None:
+        active_recording = recording_model.get_active_recording_for_channel(settings, channel_id)
+        if active_recording is not None:
+            try:
+                hold_broad_no = int(active_recording.get("broad_no"))
+            except (TypeError, ValueError):
+                hold_broad_no = None
+
+    request.app.state.supervisor.hold_manual_stop_for_broadcast(
+        channel_id,
+        hold_broad_no,
+    )
+
     return _build_redirect(
         "/",
         message=f"녹화 중지를 요청했습니다: {channel['user_id']}",
@@ -177,19 +196,14 @@ async def retry_dashboard_channel(
         return _build_redirect("/", error="채널을 찾을 수 없습니다.")
 
     status = str(channel.get("last_status") or "")
-    if status not in {"standby_no_stream", "error"}:
+    if status not in {"standby_no_stream", "error", "online"}:
         return _build_redirect(
             "/",
             error=f"재시도 가능한 상태가 아닙니다: {channel['user_id']}",
         )
 
-    if not bool(channel.get("enabled")):
-        return _build_redirect(
-            "/",
-            error=f"비활성화된 채널은 재시도할 수 없습니다: {channel['user_id']}",
-        )
-
-    request.app.state.supervisor.request_force_probe(channel_id)
+    request.app.state.supervisor.clear_manual_stop_hold(channel_id)
+    request.app.state.supervisor.request_manual_record(channel_id)
     return _build_redirect(
         "/",
         message=f"재시도를 요청했습니다: {channel['user_id']}",

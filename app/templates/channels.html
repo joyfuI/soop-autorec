@@ -198,7 +198,7 @@
   </head>
   <body>
     <div class="wrap">
-      {% set status_labels = {"offline":"오프라인","recording":"녹화 중","standby_no_stream":"방송 대기(스트림 미준비)","error":"오류","stopping":"중지 중","starting":"시작 중","remuxing":"리먹싱 중","completed":"완료","failed":"실패","partial":"부분 완료","interrupted":"중단됨"} %}
+      {% set status_labels = {"offline":"&#50724;&#54532;&#46972;&#51064;","online":"&#50728;&#46972;&#51064;","recording":"&#45433;&#54868; &#51473;","standby_no_stream":"&#48169;&#49569; &#45824;&#44592;(&#49828;&#53944;&#47548; &#48120;&#51456;&#48708;)","error":"&#50724;&#47448;","stopping":"&#51473;&#51648; &#51473;","starting":"&#49884;&#51089; &#51473;","remuxing":"&#47532;&#47673;&#49905; &#51473;","completed":"&#50756;&#47308;","failed":"&#49892;&#54056;","partial":"&#48512;&#48516; &#50756;&#47308;","interrupted":"&#51473;&#45800;&#46120;"} %}
       <header class="top">
         <h1>채널 관리</h1>
         <div class="top-actions">
@@ -325,7 +325,7 @@
                     <td>{{ c.user_id }}</td>
                     <td>{{ c.display_name or "-" }}</td>
                     <td>{{ "Y" if c.enabled else "N" }}</td>
-                    <td>{{ status_labels.get(c.last_status, c.last_status) }}</td>
+                    <td>{{ status_labels.get(c.last_status, c.last_status)|safe }}</td>
                     <td class="mono">{{ c.last_broad_no or "-" }}</td>
                     <td>
                       <div class="actions">

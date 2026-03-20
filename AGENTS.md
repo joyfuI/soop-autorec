@@ -20,6 +20,7 @@
 - 재생 URL은 `https://play.sooplive.co.kr/{userId}` 고정이다.
 - 프록시 설정은 환경변수가 아니라 DB(`control_proxy_url`)로만 관리한다.
 - 프록시는 `streamlink --stream-url` 해석 1회에만 적용하고, 이후 manifest/key/segment 요청은 direct다.
+- 수동 중단된 채널이 같은 `broadNo`로 계속 라이브 상태면 자동 녹화를 재시작하지 않고 `online` 상태를 유지한다(재시도/오프라인/새 방송 번호에서 해제).
 - 장시간 작업은 request-context가 아니라 lifespan supervisor에서만 처리한다.
 - SQLite 단일 writer 제약 때문에 Uvicorn worker는 1을 유지한다.
 

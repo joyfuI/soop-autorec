@@ -56,6 +56,8 @@ class Supervisor:
         self._http_client: httpx.AsyncClient | None = None
         self._last_maintenance_at: datetime | None = None
         self._force_probe_channel_ids: set[int] = set()
+        self._manual_record_request_channel_ids: set[int] = set()
+        self._manual_stop_hold_broad_no_by_channel_id: dict[int, int] = {}
 
     async def start(self) -> None:
         if self.state.running:
@@ -76,6 +78,8 @@ class Supervisor:
         self._stop_event.clear()
         self._wake_event.clear()
         self._force_probe_channel_ids.clear()
+        self._manual_record_request_channel_ids.clear()
+        self._manual_stop_hold_broad_no_by_channel_id.clear()
         self.state.running = True
         self.state.started_at = now_utc()
         self._http_client = httpx.AsyncClient(timeout=8.0)
@@ -98,6 +102,19 @@ class Supervisor:
 
         self.state.active_recorder_count = self.recorder.active_count
         self.state.running = False
+
+    def hold_manual_stop_for_broadcast(self, channel_id: int, broad_no: int | None) -> None:
+        if broad_no is None:
+            self._manual_stop_hold_broad_no_by_channel_id.pop(channel_id, None)
+            return
+        self._manual_stop_hold_broad_no_by_channel_id[channel_id] = broad_no
+
+    def clear_manual_stop_hold(self, channel_id: int) -> None:
+        self._manual_stop_hold_broad_no_by_channel_id.pop(channel_id, None)
+
+    def request_manual_record(self, channel_id: int) -> None:
+        self._manual_record_request_channel_ids.add(channel_id)
+        self.request_force_probe(channel_id)
 
     def request_force_probe(self, channel_id: int) -> None:
         self._force_probe_channel_ids.add(channel_id)
@@ -125,16 +142,19 @@ class Supervisor:
     async def _poll_channels(self) -> None:
         now = now_utc()
         self._run_maintenance(now)
-        channels = channel_model.list_channels(self.settings, enabled_only=True)
-        forced_probe_channel_ids = self._pop_forced_probe_channel_ids(channels)
+        all_channels = channel_model.list_channels(self.settings)
+        forced_probe_channel_ids = self._pop_forced_probe_channel_ids(all_channels)
+        manual_record_request_channel_ids = self._pop_manual_record_request_channel_ids(
+            all_channels
+        )
 
         self.state.iteration_count += 1
-        self.state.last_channel_count = len(channels)
+        self.state.last_channel_count = len(all_channels)
 
         live_count = 0
         probe_error_count = 0
 
-        for channel in channels:
+        for channel in all_channels:
             channel_id = int(channel["id"])
             force_probe = channel_id in forced_probe_channel_ids
             if not force_probe and not self._is_probe_due(channel, now):
@@ -145,7 +165,16 @@ class Supervisor:
 
             if result.status == ProbeStatus.LIVE:
                 live_count += 1
-                await self._handle_live(channel, result)
+                manual_record_requested = channel_id in manual_record_request_channel_ids
+                allow_auto_start = bool(channel.get("enabled")) or (
+                    manual_record_requested
+                )
+                await self._handle_live(
+                    channel,
+                    result,
+                    allow_auto_start=allow_auto_start,
+                    manual_record_requested=manual_record_requested,
+                )
             elif result.status == ProbeStatus.OFFLINE:
                 await self._handle_offline(channel)
             else:
@@ -159,11 +188,21 @@ class Supervisor:
         if not self._force_probe_channel_ids:
             return set()
 
-        enabled_channel_ids = {int(channel["id"]) for channel in channels}
-        forced_channel_ids = self._force_probe_channel_ids & enabled_channel_ids
+        channel_ids = {int(channel["id"]) for channel in channels}
+        forced_channel_ids = self._force_probe_channel_ids & channel_ids
         self._force_probe_channel_ids.difference_update(forced_channel_ids)
-        self._force_probe_channel_ids.intersection_update(enabled_channel_ids)
+        self._force_probe_channel_ids.intersection_update(channel_ids)
         return forced_channel_ids
+
+    def _pop_manual_record_request_channel_ids(self, channels: list[dict]) -> set[int]:
+        if not self._manual_record_request_channel_ids:
+            return set()
+
+        channel_ids = {int(channel["id"]) for channel in channels}
+        requested_channel_ids = self._manual_record_request_channel_ids & channel_ids
+        self._manual_record_request_channel_ids.difference_update(requested_channel_ids)
+        self._manual_record_request_channel_ids.intersection_update(channel_ids)
+        return requested_channel_ids
 
     def _run_maintenance(self, now: datetime, *, force: bool = False) -> None:
         if (
@@ -213,8 +252,16 @@ class Supervisor:
     async def _run_probe(self, user_id: str) -> ProbeResult:
         return await probe_channel(user_id, client=self._http_client)
 
-    async def _handle_live(self, channel: dict, result: ProbeResult) -> None:
+    async def _handle_live(
+        self,
+        channel: dict,
+        result: ProbeResult,
+        *,
+        allow_auto_start: bool,
+        manual_record_requested: bool,
+    ) -> None:
         payload = result.payload or {}
+        channel_id = int(channel["id"])
         broad_no_raw = payload.get("broadNo")
 
         try:
@@ -229,11 +276,58 @@ class Supervisor:
             )
             return
 
+        if not manual_record_requested and self._is_manual_stop_hold_live(
+            channel_id=channel_id,
+            broad_no=broad_no,
+        ):
+            active_recording = recording_model.get_active_recording_for_channel(
+                self.settings,
+                channel_id,
+            )
+            hold_status = "online"
+            if active_recording is not None:
+                active_status = str(active_recording.get("status") or "")
+                hold_status = (
+                    "stopping" if active_status in {"stopping", "remuxing"} else "recording"
+                )
+            channel_model.update_probe_state(
+                self.settings,
+                channel_id,
+                last_status=hold_status,
+                last_broad_no=broad_no,
+                last_probe_at=now_utc().isoformat(),
+                last_error=None,
+                offline_streak=0,
+            )
+            return
+
+        if not allow_auto_start:
+            active_recording = recording_model.get_active_recording_for_channel(
+                self.settings,
+                channel_id,
+            )
+            next_status = "online"
+            if active_recording is not None:
+                active_status = str(active_recording.get("status") or "")
+                next_status = (
+                    "stopping" if active_status in {"stopping", "remuxing"} else "recording"
+                )
+            channel_model.update_probe_state(
+                self.settings,
+                channel_id,
+                last_status=next_status,
+                last_broad_no=broad_no,
+                last_probe_at=now_utc().isoformat(),
+                last_error=None,
+                offline_streak=0,
+            )
+            return
+
         now_iso = now_utc().isoformat()
 
         recording, created = recording_model.create_or_get_recording_for_live(
             self.settings,
-            channel_id=channel["id"],
+            channel_id=channel_id,
             user_id=channel["user_id"],
             broad_no=broad_no,
             payload=payload,
@@ -280,7 +374,7 @@ class Supervisor:
 
         channel_model.update_probe_state(
             self.settings,
-            channel["id"],
+            channel_id,
             last_status=next_status,
             last_broad_no=broad_no,
             last_probe_at=now_iso,
@@ -348,17 +442,19 @@ class Supervisor:
             return None
 
     async def _handle_offline(self, channel: dict) -> None:
+        channel_id = int(channel["id"])
         now_iso = now_utc().isoformat()
         prior_streak = int(channel.get("offline_streak") or 0)
         offline_streak = prior_streak + 1
+        self.clear_manual_stop_hold(channel_id)
 
         active_recording = recording_model.get_active_recording_for_channel(
             self.settings,
-            channel["id"],
+            channel_id,
         )
 
         if active_recording is not None and offline_streak >= self.settings.offline_confirm_count:
-            await self.recorder.stop_recording(channel["id"], reason="offline_confirmed")
+            await self.recorder.stop_recording(channel_id, reason="offline_confirmed")
             status = "stopping"
         elif active_recording is not None:
             status = "recording"
@@ -367,7 +463,7 @@ class Supervisor:
 
         channel_model.update_probe_state(
             self.settings,
-            channel["id"],
+            channel_id,
             last_status=status,
             last_broad_no=channel.get("last_broad_no"),
             last_probe_at=now_iso,
@@ -376,17 +472,18 @@ class Supervisor:
         )
 
     def _handle_probe_error(self, channel: dict, result: ProbeResult) -> None:
+        channel_id = int(channel["id"])
         now_iso = now_utc().isoformat()
 
         active_recording = recording_model.get_active_recording_for_channel(
             self.settings,
-            channel["id"],
+            channel_id,
         )
         next_status = "recording" if active_recording is not None else "error"
 
         channel_model.update_probe_state(
             self.settings,
-            channel["id"],
+            channel_id,
             last_status=next_status,
             last_broad_no=channel.get("last_broad_no"),
             last_probe_at=now_iso,
@@ -398,10 +495,19 @@ class Supervisor:
             self.settings,
             level="warning",
             event_type="probe_error",
-            channel_id=channel["id"],
+            channel_id=channel_id,
             message="채널 프로브에 실패했습니다.",
             payload={"error": result.error},
         )
+
+    def _is_manual_stop_hold_live(self, *, channel_id: int, broad_no: int) -> bool:
+        held_broad_no = self._manual_stop_hold_broad_no_by_channel_id.get(channel_id)
+        if held_broad_no is None:
+            return False
+        if held_broad_no != broad_no:
+            self._manual_stop_hold_broad_no_by_channel_id.pop(channel_id, None)
+            return False
+        return True
 
     def _is_probe_due(self, channel: dict, now: datetime) -> bool:
         last_probe_raw = channel.get("last_probe_at")
