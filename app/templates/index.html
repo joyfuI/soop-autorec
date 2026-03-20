@@ -427,7 +427,26 @@
         });
       }
 
+      function clearFlashQueryParams() {
+        const url = new URL(window.location.href);
+        let changed = false;
+        for (const key of ["message", "error"]) {
+          if (!url.searchParams.has(key)) continue;
+          url.searchParams.delete(key);
+          changed = true;
+        }
+        if (!changed) return;
+
+        const nextSearch = url.searchParams.toString();
+        const nextUrl =
+          url.pathname +
+          (nextSearch ? "?" + nextSearch : "") +
+          (url.hash || "");
+        history.replaceState(null, "", nextUrl);
+      }
+
       applyBrowserLocalTime();
+      clearFlashQueryParams();
 
       (function () {
         const STREAM_URL = "/api/system/stream";

@@ -537,12 +537,7 @@
           return TAB_KEYS.includes(key) ? key : null;
         }
 
-        function clearNoticesAndQuery() {
-          const notices = document.querySelectorAll(".notice");
-          for (const notice of notices) {
-            notice.remove();
-          }
-
+        function clearFlashQueryParams() {
           const url = new URL(window.location.href);
           let changed = false;
           for (const key of ["message", "error"]) {
@@ -558,6 +553,18 @@
             (nextSearch ? "?" + nextSearch : "") +
             (url.hash || "");
           history.replaceState(null, "", nextUrl);
+        }
+
+        function clearNotices() {
+          const notices = document.querySelectorAll(".notice");
+          for (const notice of notices) {
+            notice.remove();
+          }
+        }
+
+        function clearNoticesAndQuery() {
+          clearNotices();
+          clearFlashQueryParams();
         }
 
         function activateTab(tabKey, updateHash) {
@@ -634,6 +641,7 @@
         const initialTab = hashToTabKey(window.location.hash) || DEFAULT_TAB;
         activateTab(initialTab, true);
         bindTabPreserveForms();
+        clearFlashQueryParams();
       })();
 
     </script>
