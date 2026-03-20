@@ -124,6 +124,62 @@ async def channels_page(
     )
 
 
+@router.post("/dashboard/channels/{channel_id}/stop")
+async def stop_dashboard_channel_recording(
+    request: Request,
+    channel_id: int,
+) -> RedirectResponse:
+    settings = request.app.state.settings
+    channel = channel_model.get_channel(settings, channel_id)
+    if channel is None:
+        return _build_redirect("/", error="채널을 찾을 수 없습니다.")
+
+    stopped = await request.app.state.supervisor.recorder.stop_recording(
+        channel_id,
+        reason="manual_dashboard_stop",
+    )
+    if not stopped:
+        return _build_redirect(
+            "/",
+            error=f"현재 중단할 녹화가 없습니다: {channel['user_id']}",
+        )
+
+    return _build_redirect(
+        "/",
+        message=f"녹화 중지를 요청했습니다: {channel['user_id']}",
+    )
+
+
+@router.post("/dashboard/channels/{channel_id}/retry")
+async def retry_dashboard_channel(
+    request: Request,
+    channel_id: int,
+) -> RedirectResponse:
+    settings = request.app.state.settings
+    channel = channel_model.get_channel(settings, channel_id)
+    if channel is None:
+        return _build_redirect("/", error="채널을 찾을 수 없습니다.")
+
+    status = str(channel.get("last_status") or "")
+    if status not in {"standby_no_stream", "error"}:
+        return _build_redirect(
+            "/",
+            error=f"재시도 가능한 상태가 아닙니다: {channel['user_id']}",
+        )
+
+    if not bool(channel.get("enabled")):
+        return _build_redirect(
+            "/",
+            error=f"비활성화된 채널은 재시도할 수 없습니다: {channel['user_id']}",
+        )
+
+    request.app.state.supervisor.request_force_probe(channel_id)
+    return _build_redirect(
+        "/",
+        message=f"재시도를 요청했습니다: {channel['user_id']}",
+    )
+
+
 @router.post("/channels")
 async def create_channel(
     request: Request,

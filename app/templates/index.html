@@ -58,6 +58,28 @@
         border-color: #b91c1c;
         background: #b91c1c;
       }
+      .action-cell { white-space: nowrap; }
+      .action-form { margin: 0; }
+      .btn-mini {
+        font: inherit;
+        background: #fff;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 4px 10px;
+        color: var(--ink);
+        font-size: 0.82rem;
+        cursor: pointer;
+      }
+      .btn-mini.warn {
+        color: #92400e;
+        border-color: #fcd34d;
+        background: #fffbeb;
+      }
+      .btn-mini.danger {
+        color: #fff;
+        border-color: #b91c1c;
+        background: #b91c1c;
+      }
       .grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -196,11 +218,12 @@
               <tr>
                 <th>ID</th>
                 <th>SOOP ID</th>
-                <th>이름</th>
-                <th>상태</th>
-                <th>방송 번호</th>
-                <th>최근 확인 시각</th>
-                <th>최근 오류</th>
+                <th>&#51060;&#47492;</th>
+                <th>&#49345;&#53468;</th>
+                <th>&#48169;&#49569; &#48264;&#54840;</th>
+                <th>&#52572;&#44540; &#54869;&#51064; &#49884;&#44033;</th>
+                <th>&#52572;&#44540; &#50724;&#47448;</th>
+                <th>&#51089;&#50629;</th>
               </tr>
             </thead>
             <tbody>
@@ -218,10 +241,23 @@
                     <td class="mono">{{ channel.last_broad_no or "-" }}</td>
                     <td class="mono">{{ render_time_value(channel.last_probe_at) }}</td>
                     <td>{{ channel.last_error or "-" }}</td>
+                    <td class="action-cell">
+                      {% if channel.last_status == "recording" %}
+                        <form method="post" action="/dashboard/channels/{{ channel.id }}/stop" class="action-form">
+                          <button type="submit" class="btn-mini danger">&#51473;&#45800;</button>
+                        </form>
+                      {% elif channel.last_status in ["standby_no_stream", "error"] %}
+                        <form method="post" action="/dashboard/channels/{{ channel.id }}/retry" class="action-form">
+                          <button type="submit" class="btn-mini warn">&#51116;&#49884;&#46020;</button>
+                        </form>
+                      {% else %}
+                        -
+                      {% endif %}
+                    </td>
                   </tr>
                 {% endfor %}
               {% else %}
-                <tr><td colspan="7" class="small">등록된 채널이 없습니다. 채널 관리에서 추가하세요.</td></tr>
+                <tr><td colspan="8" class="small">&#46321;&#47197;&#46108; &#52292;&#45328;&#51060; &#50630;&#49845;&#45768;&#45796;. &#52292;&#45328; &#44288;&#47532;&#50640;&#49436; &#52628;&#44032;&#54616;&#49464;&#50836;.</td></tr>
               {% endif %}
             </tbody>
           </table>

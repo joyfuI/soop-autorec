@@ -51,9 +51,11 @@ class Supervisor:
             relay_base_url=relay_base_url,
         )
         self._stop_event = asyncio.Event()
+        self._wake_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._http_client: httpx.AsyncClient | None = None
         self._last_maintenance_at: datetime | None = None
+        self._force_probe_channel_ids: set[int] = set()
 
     async def start(self) -> None:
         if self.state.running:
@@ -72,6 +74,8 @@ class Supervisor:
         self._run_maintenance(now_utc(), force=True)
 
         self._stop_event.clear()
+        self._wake_event.clear()
+        self._force_probe_channel_ids.clear()
         self.state.running = True
         self.state.started_at = now_utc()
         self._http_client = httpx.AsyncClient(timeout=8.0)
@@ -82,6 +86,7 @@ class Supervisor:
             return
 
         self._stop_event.set()
+        self._wake_event.set()
         if self._task is not None:
             await self._task
 
@@ -93,6 +98,10 @@ class Supervisor:
 
         self.state.active_recorder_count = self.recorder.active_count
         self.state.running = False
+
+    def request_force_probe(self, channel_id: int) -> None:
+        self._force_probe_channel_ids.add(channel_id)
+        self._wake_event.set()
 
     async def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -106,9 +115,10 @@ class Supervisor:
 
             try:
                 await asyncio.wait_for(
-                    self._stop_event.wait(),
+                    self._wake_event.wait(),
                     timeout=self.settings.poll_interval_sec,
                 )
+                self._wake_event.clear()
             except TimeoutError:
                 continue
 
@@ -116,6 +126,7 @@ class Supervisor:
         now = now_utc()
         self._run_maintenance(now)
         channels = channel_model.list_channels(self.settings, enabled_only=True)
+        forced_probe_channel_ids = self._pop_forced_probe_channel_ids(channels)
 
         self.state.iteration_count += 1
         self.state.last_channel_count = len(channels)
@@ -124,7 +135,9 @@ class Supervisor:
         probe_error_count = 0
 
         for channel in channels:
-            if not self._is_probe_due(channel, now):
+            channel_id = int(channel["id"])
+            force_probe = channel_id in forced_probe_channel_ids
+            if not force_probe and not self._is_probe_due(channel, now):
                 continue
 
             result = await self._run_probe(channel["user_id"])
@@ -141,6 +154,16 @@ class Supervisor:
 
         self.state.last_live_count = live_count
         self.state.last_probe_error_count = probe_error_count
+
+    def _pop_forced_probe_channel_ids(self, channels: list[dict]) -> set[int]:
+        if not self._force_probe_channel_ids:
+            return set()
+
+        enabled_channel_ids = {int(channel["id"]) for channel in channels}
+        forced_channel_ids = self._force_probe_channel_ids & enabled_channel_ids
+        self._force_probe_channel_ids.difference_update(forced_channel_ids)
+        self._force_probe_channel_ids.intersection_update(enabled_channel_ids)
+        return forced_channel_ids
 
     def _run_maintenance(self, now: datetime, *, force: bool = False) -> None:
         if (
