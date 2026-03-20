@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import sqlite3
 from urllib.parse import urlencode
@@ -21,9 +22,24 @@ templates.env.filters["fmt_datetime"] = format_datetime_for_display
 templates.env.filters["fmt_iso_offset"] = format_datetime_iso_offset
 router = APIRouter(tags=["ui"])
 CHANNEL_TAB_KEYS = {"channel", "auth", "proxy"}
+logger = logging.getLogger(__name__)
 
 
 async def _delayed_process_exit(delay_sec: float = 0.3) -> None:
+    await asyncio.sleep(delay_sec)
+    os._exit(0)
+
+
+async def _shutdown_supervisor_and_exit(
+    supervisor,
+    *,
+    recorder_stop_reason: str,
+    delay_sec: float = 0.3,
+) -> None:
+    try:
+        await supervisor.stop(recorder_stop_reason=recorder_stop_reason)
+    except Exception:  # pragma: no cover
+        logger.exception("재시작 준비 중 supervisor 종료에 실패했습니다.")
     await asyncio.sleep(delay_sec)
     os._exit(0)
 
@@ -373,17 +389,22 @@ async def restart_system(
             tab=tab_key,
         )
 
-    background_tasks.add_task(_delayed_process_exit)
     if active_recorder_count > 0 and force_restart:
+        background_tasks.add_task(
+            _shutdown_supervisor_and_exit,
+            request.app.state.supervisor,
+            recorder_stop_reason="force_restart",
+        )
         return _build_redirect(
             target_path,
             message=(
-                f"녹화 중 {active_recorder_count}개 채널이 있어도 강제 재시작을 진행합니다. "
+                f"녹화 중 {active_recorder_count}개 채널을 중단하고 재시작합니다. "
                 "잠시 후 다시 접속해주세요."
             ),
             tab=tab_key,
         )
 
+    background_tasks.add_task(_delayed_process_exit)
     return _build_redirect(
         target_path,
         message="재시작을 요청했습니다. 잠시 후 다시 접속해주세요.",

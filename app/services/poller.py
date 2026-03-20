@@ -81,7 +81,7 @@ class Supervisor:
         self._http_client = httpx.AsyncClient(timeout=8.0)
         self._task = asyncio.create_task(self._run(), name="supervisor-poller")
 
-    async def stop(self) -> None:
+    async def stop(self, *, recorder_stop_reason: str = "app_shutdown") -> None:
         if not self.state.running:
             return
 
@@ -90,7 +90,7 @@ class Supervisor:
         if self._task is not None:
             await self._task
 
-        await self.recorder.stop_all(reason="app_shutdown")
+        await self.recorder.stop_all(reason=recorder_stop_reason)
 
         if self._http_client is not None:
             await self._http_client.aclose()
