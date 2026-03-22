@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.db import initialize_database
@@ -32,6 +33,7 @@ async def lifespan(application: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(title="soop-autorec", lifespan=lifespan)
+    app.mount("/static", StaticFiles(directory="app/static"), name="static")
     app.include_router(ui_router)
     app.include_router(system_router)
     app.include_router(channels_router)

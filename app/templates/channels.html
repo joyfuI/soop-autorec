@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>soop-autorec 채널 관리</title>
+    <link rel="stylesheet" href="/static/css/common.css" />
     <style>
       :root {
         --bg: #f3f4f6;
@@ -16,83 +17,11 @@
         --err: #b91c1c;
         --err-bg: #fef2f2;
       }
-      * { box-sizing: border-box; }
       body {
         margin: 0;
         background: linear-gradient(135deg, #eef5ff 0%, #f3f4f6 45%, #ebfbf7 100%);
         color: var(--ink);
         font-family: "Pretendard", "Noto Sans KR", "Segoe UI", sans-serif;
-      }
-      .wrap {
-        max-width: 1180px;
-        margin: 28px auto 40px;
-        padding: 0 14px;
-      }
-      .top {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-end;
-        flex-wrap: wrap;
-        gap: 10px;
-        margin-bottom: 12px;
-      }
-      .top-left {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-      }
-      .top-actions {
-        display: flex;
-        gap: 8px;
-      }
-      .top-actions form { margin: 0; }
-      .page-nav {
-        display: flex;
-        gap: 8px;
-        flex-wrap: wrap;
-      }
-      .page-link {
-        font: inherit;
-        text-decoration: none;
-        border: 1px solid var(--line);
-        border-radius: 999px;
-        padding: 6px 12px;
-        color: var(--ink);
-        background: var(--panel);
-        font-size: 0.88rem;
-      }
-      .page-link.active {
-        color: #fff;
-        border-color: #0f766e;
-        background: #0f766e;
-        font-weight: 600;
-      }
-      h1 { margin: 0; font-size: 1.35rem; }
-      .btn-link {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        font: inherit;
-        text-decoration: none;
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        padding: 8px 12px;
-        color: var(--ink);
-        background: var(--panel);
-        font-size: 0.92rem;
-        cursor: pointer;
-      }
-      .btn-link.danger {
-        color: #fff;
-        background: #b91c1c;
-        border-color: #b91c1c;
-      }
-      .notice {
-        border: 1px solid;
-        border-radius: 10px;
-        padding: 10px 12px;
-        margin-bottom: 10px;
-        font-size: 0.92rem;
       }
       .notice.ok { border-color: #a7f3d0; background: var(--ok-bg); color: var(--ok); }
       .notice.err { border-color: #fecaca; background: var(--err-bg); color: var(--err); }
@@ -173,11 +102,6 @@
         border-radius: 8px;
         cursor: pointer;
       }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 0.9rem;
-      }
       th, td {
         text-align: left;
         padding: 9px 10px;
@@ -185,7 +109,6 @@
         vertical-align: top;
       }
       th { color: var(--muted); font-size: 0.8rem; }
-      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
       .actions {
         display: flex;
         gap: 6px;

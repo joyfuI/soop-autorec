@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>soop-autorec 대시보드</title>
+    <link rel="stylesheet" href="/static/css/common.css" />
     <style>
       :root {
         --bg: #f3f4f6;
@@ -15,79 +16,11 @@
         --warn: #b45309;
         --error: #b91c1c;
       }
-      * { box-sizing: border-box; }
       body {
         margin: 0;
         background: radial-gradient(circle at top left, #e5f3f1 0%, var(--bg) 55%);
         color: var(--ink);
         font-family: "Pretendard", "Noto Sans KR", "Segoe UI", sans-serif;
-      }
-      .wrap {
-        max-width: 1180px;
-        margin: 28px auto 40px;
-        padding: 0 14px;
-      }
-      .top {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-end;
-        flex-wrap: wrap;
-        gap: 10px;
-        margin-bottom: 12px;
-      }
-      .top-left {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-      }
-      h1 {
-        margin: 0;
-        font-size: 1.35rem;
-      }
-      .page-nav {
-        display: flex;
-        gap: 8px;
-        flex-wrap: wrap;
-      }
-      .page-link {
-        font: inherit;
-        text-decoration: none;
-        background: var(--panel);
-        border: 1px solid var(--line);
-        border-radius: 999px;
-        padding: 6px 12px;
-        color: var(--ink);
-        font-size: 0.88rem;
-      }
-      .page-link.active {
-        color: #fff;
-        border-color: #0f766e;
-        background: #0f766e;
-        font-weight: 600;
-      }
-      .top-actions {
-        display: flex;
-        gap: 8px;
-      }
-      .top-actions form { margin: 0; }
-      .btn-link {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        font: inherit;
-        text-decoration: none;
-        background: var(--panel);
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        padding: 8px 12px;
-        color: var(--ink);
-        font-size: 0.92rem;
-        cursor: pointer;
-      }
-      .btn-link.danger {
-        color: #fff;
-        border-color: #b91c1c;
-        background: #b91c1c;
       }
       .action-cell { white-space: nowrap; }
       .action-form { margin: 0; }
@@ -142,11 +75,6 @@
         border-bottom: 1px solid var(--line);
         font-size: 1rem;
       }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 0.9rem;
-      }
       th, td {
         text-align: left;
         padding: 9px 12px;
@@ -155,7 +83,7 @@
       }
       th { color: var(--muted); font-weight: 600; font-size: 0.8rem; }
       .channel-status-table td { vertical-align: middle; }
-      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      td.mono { vertical-align: middle; }
       .status {
         display: inline-block;
         border-radius: 999px;
@@ -169,13 +97,6 @@
       .status.offline { color: #4b5563; background: #f9fafb; }
       .status.online { color: #1d4ed8; border-color: #bfdbfe; background: #eff6ff; }
       .small { color: var(--muted); font-size: 0.83rem; }
-      .notice {
-        border: 1px solid;
-        border-radius: 10px;
-        padding: 10px 12px;
-        margin-bottom: 10px;
-        font-size: 0.92rem;
-      }
       .notice.ok { border-color: #a7f3d0; background: #ecfdf5; color: #065f46; }
       .notice.err { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
     </style>
