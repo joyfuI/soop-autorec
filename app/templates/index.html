@@ -275,7 +275,7 @@
                         {{ status_labels.get(channel.last_status, channel.last_status)|safe }}
                       </span>
                     </td>
-                    <td class="mono">{{ channel.last_broad_no or "-" }}</td>
+                    <td class="mono">{{ "-" if channel.last_status == "offline" else (channel.last_broad_no or "-") }}</td>
                     <td class="mono">{{ render_time_value(channel.last_probe_at) }}</td>
                     <td class="action-cell">
                       {% if channel.last_status == "recording" %}
@@ -290,8 +290,6 @@
                         <form method="post" action="/dashboard/channels/{{ channel.id }}/retry" class="action-form">
                           <button type="submit" class="btn-mini warn">&#51116;&#49884;&#46020;</button>
                         </form>
-                      {% else %}
-                        -
                       {% endif %}
                     </td>
                   </tr>
