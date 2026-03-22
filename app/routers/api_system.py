@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -41,7 +42,7 @@ async def api_status(request: Request) -> dict:
         event_log_size,
         event_log_mtime_ns,
         recording_max_id,
-        channel_max_updated_at,
+        channel_dashboard_cursor,
         channel_count,
     ) = _fetch_stream_db_cursor(settings)
     return {
@@ -57,7 +58,7 @@ async def api_status(request: Request) -> dict:
         "event_log_size": event_log_size,
         "event_log_mtime_ns": event_log_mtime_ns,
         "recording_max_id": recording_max_id,
-        "channel_max_updated_at": channel_max_updated_at,
+        "channel_dashboard_cursor": channel_dashboard_cursor,
         "channel_count": channel_count,
     }
 
@@ -69,23 +70,52 @@ def _fetch_stream_db_cursor(settings: Settings) -> tuple[int, int, int, str, int
         recording_row = conn.execute(
             "SELECT COALESCE(MAX(id), 0) AS max_id FROM recordings"
         ).fetchone()
-        channel_row = conn.execute(
-            "SELECT COALESCE(MAX(updated_at), '') AS max_updated_at, COUNT(*) AS channel_count "
-            "FROM channels"
-        ).fetchone()
+        channel_rows = conn.execute(
+            """
+            SELECT
+              id,
+              user_id,
+              display_name,
+              enabled,
+              last_status,
+              last_broad_no,
+              last_probe_at
+            FROM channels
+            ORDER BY id ASC
+            """
+        ).fetchall()
 
     recording_max_id = int(recording_row["max_id"]) if recording_row is not None else 0
-    channel_max_updated_at = (
-        str(channel_row["max_updated_at"]) if channel_row is not None else ""
-    )
-    channel_count = int(channel_row["channel_count"]) if channel_row is not None else 0
+    channel_dashboard_cursor, channel_count = _build_channel_dashboard_cursor(channel_rows)
     return (
         event_log_size,
         event_log_mtime_ns,
         recording_max_id,
-        channel_max_updated_at,
+        channel_dashboard_cursor,
         channel_count,
     )
+
+
+def _build_channel_dashboard_cursor(channel_rows) -> tuple[str, int]:
+    hasher = hashlib.sha256()
+    channel_count = 0
+    for row in channel_rows:
+        channel_count += 1
+        hasher.update(str(row["id"]).encode("utf-8"))
+        hasher.update(b"\x1f")
+        hasher.update(str(row["user_id"] or "").encode("utf-8"))
+        hasher.update(b"\x1f")
+        hasher.update(str(row["display_name"] or "").encode("utf-8"))
+        hasher.update(b"\x1f")
+        hasher.update(str(int(row["enabled"] or 0)).encode("utf-8"))
+        hasher.update(b"\x1f")
+        hasher.update(str(row["last_status"] or "").encode("utf-8"))
+        hasher.update(b"\x1f")
+        hasher.update(str(row["last_broad_no"] or "").encode("utf-8"))
+        hasher.update(b"\x1f")
+        hasher.update(str(row["last_probe_at"] or "").encode("utf-8"))
+        hasher.update(b"\x1e")
+    return hasher.hexdigest(), channel_count
 
 
 def _build_stream_state_key(settings: Settings, state: SupervisorState) -> tuple:
@@ -93,7 +123,7 @@ def _build_stream_state_key(settings: Settings, state: SupervisorState) -> tuple
         event_log_size,
         event_log_mtime_ns,
         recording_max_id,
-        channel_max_updated_at,
+        channel_dashboard_cursor,
         channel_count,
     ) = _fetch_stream_db_cursor(settings)
     return (
@@ -102,7 +132,7 @@ def _build_stream_state_key(settings: Settings, state: SupervisorState) -> tuple
         event_log_size,
         event_log_mtime_ns,
         recording_max_id,
-        channel_max_updated_at,
+        channel_dashboard_cursor,
         channel_count,
     )
 

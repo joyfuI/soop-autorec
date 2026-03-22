@@ -260,7 +260,6 @@
                 <th>&#49345;&#53468;</th>
                 <th>&#48169;&#49569; &#48264;&#54840;</th>
                 <th>&#52572;&#44540; &#54869;&#51064; &#49884;&#44033;</th>
-                <th>&#52572;&#44540; &#50724;&#47448;</th>
                 <th>&#51089;&#50629;</th>
               </tr>
             </thead>
@@ -278,7 +277,6 @@
                     </td>
                     <td class="mono">{{ channel.last_broad_no or "-" }}</td>
                     <td class="mono">{{ render_time_value(channel.last_probe_at) }}</td>
-                    <td>{{ channel.last_error or "-" }}</td>
                     <td class="action-cell">
                       {% if channel.last_status == "recording" %}
                         <form method="post" action="/dashboard/channels/{{ channel.id }}/stop" class="action-form">
@@ -299,7 +297,7 @@
                   </tr>
                 {% endfor %}
               {% else %}
-                <tr><td colspan="8" class="small">&#46321;&#47197;&#46108; &#52292;&#45328;&#51060; &#50630;&#49845;&#45768;&#45796;. &#52292;&#45328; &#44288;&#47532;&#50640;&#49436; &#52628;&#44032;&#54616;&#49464;&#50836;.</td></tr>
+                <tr><td colspan="7" class="small">&#46321;&#47197;&#46108; &#52292;&#45328;&#51060; &#50630;&#49845;&#45768;&#45796;. &#52292;&#45328; &#44288;&#47532;&#50640;&#49436; &#52628;&#44032;&#54616;&#49464;&#50836;.</td></tr>
               {% endif %}
             </tbody>
           </table>
@@ -462,7 +460,7 @@
         let baselineProbeError = null;
         let baselineEventLogMtimeNs = null;
         let baselineRecordingMaxId = null;
-        let baselineChannelMaxUpdatedAt = null;
+        let baselineChannelDashboardCursor = null;
         let baselineChannelCount = null;
 
         function scheduleReload() {
@@ -483,7 +481,7 @@
             const probeErrorCount = Number(status.last_probe_error_count || 0);
             const eventLogMtimeNs = Number(status.event_log_mtime_ns || 0);
             const recordingMaxId = Number(status.recording_max_id || 0);
-            const channelMaxUpdatedAt = String(status.channel_max_updated_at || "");
+            const channelDashboardCursor = String(status.channel_dashboard_cursor || "");
             const channelCount = Number(status.channel_count || 0);
 
             if (baselineActiveRecorder === null) {
@@ -491,7 +489,7 @@
               baselineProbeError = probeErrorCount;
               baselineEventLogMtimeNs = eventLogMtimeNs;
               baselineRecordingMaxId = recordingMaxId;
-              baselineChannelMaxUpdatedAt = channelMaxUpdatedAt;
+              baselineChannelDashboardCursor = channelDashboardCursor;
               baselineChannelCount = channelCount;
               return;
             }
@@ -501,7 +499,7 @@
               probeErrorCount !== baselineProbeError ||
               eventLogMtimeNs !== baselineEventLogMtimeNs ||
               recordingMaxId !== baselineRecordingMaxId ||
-              channelMaxUpdatedAt !== baselineChannelMaxUpdatedAt ||
+              channelDashboardCursor !== baselineChannelDashboardCursor ||
               channelCount !== baselineChannelCount
             ) {
               scheduleReload();
@@ -512,7 +510,7 @@
             baselineProbeError = probeErrorCount;
             baselineEventLogMtimeNs = eventLogMtimeNs;
             baselineRecordingMaxId = recordingMaxId;
-            baselineChannelMaxUpdatedAt = channelMaxUpdatedAt;
+            baselineChannelDashboardCursor = channelDashboardCursor;
             baselineChannelCount = channelCount;
           } catch (error) {
             // ignore and wait for next poll
@@ -525,7 +523,7 @@
           baselineProbeError = null;
           baselineEventLogMtimeNs = null;
           baselineRecordingMaxId = null;
-          baselineChannelMaxUpdatedAt = null;
+          baselineChannelDashboardCursor = null;
           baselineChannelCount = null;
           fallbackTimer = window.setInterval(() => {
             void pollFallbackOnce();
@@ -541,7 +539,7 @@
           baselineProbeError = null;
           baselineEventLogMtimeNs = null;
           baselineRecordingMaxId = null;
-          baselineChannelMaxUpdatedAt = null;
+          baselineChannelDashboardCursor = null;
           baselineChannelCount = null;
         }
 
