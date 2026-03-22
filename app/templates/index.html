@@ -231,6 +231,7 @@
                 <th>레벨</th>
                 <th>이벤트 타입</th>
                 <th>채널 ID</th>
+                <th>이름</th>
                 <th>메시지</th>
               </tr>
             </thead>
@@ -242,11 +243,12 @@
                     <td>{{ level_labels.get(event.level, event.level) }}</td>
                     <td>{{ event_type_labels.get(event.event_type, event.event_type) }}</td>
                     <td class="mono">{{ event.channel_id or "-" }}</td>
+                    <td>{{ event.channel_name or "-" }}</td>
                     <td>{{ event.message }}</td>
                   </tr>
                 {% endfor %}
               {% else %}
-                <tr><td colspan="5" class="small">아직 이벤트가 없습니다.</td></tr>
+                <tr><td colspan="6" class="small">아직 이벤트가 없습니다.</td></tr>
               {% endif %}
             </tbody>
           </table>

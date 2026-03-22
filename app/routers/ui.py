@@ -94,6 +94,22 @@ async def dashboard(
     summary = dashboard_model.fetch_dashboard_summary(settings)
     channels = channel_model.list_channels(settings)
     recent_events = event_log_model.list_recent_event_logs(settings, limit=12)
+    channel_name_by_id = {
+        int(channel["id"]): str(channel.get("display_name") or channel.get("user_id") or "")
+        for channel in channels
+    }
+    for event in recent_events:
+        channel_id = event.get("channel_id")
+        try:
+            normalized_channel_id = int(channel_id) if channel_id is not None else None
+        except (TypeError, ValueError):
+            normalized_channel_id = None
+
+        event["channel_name"] = (
+            channel_name_by_id.get(normalized_channel_id)
+            if normalized_channel_id is not None
+            else None
+        )
     recent_recordings = recording_model.list_recent_recordings(settings, limit=12)
     active_recorder_count = request.app.state.supervisor.recorder.active_count
 
