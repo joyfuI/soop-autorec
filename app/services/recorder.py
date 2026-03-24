@@ -213,13 +213,14 @@ class RecorderManager:
             )
 
         output_template = channel.get("output_template") or DEFAULT_OUTPUT_TEMPLATE
+        broad_title = str(payload.get("broadTitle") or "제목없음")
 
         broad_start_at = self._parse_broad_start(recording.get("broad_start_at"))
         relative_output = self._render_relative_output_path(
             template=str(output_template),
             display_name=str(channel.get("display_name") or user_id),
             user_id=user_id,
-            title=str(payload.get("broadTitle") or "제목없음"),
+            title=broad_title,
             broad_no=broad_no,
             broad_start_at=broad_start_at,
         )
@@ -345,7 +346,7 @@ class RecorderManager:
             event_type="record_start",
             channel_id=channel_id,
             recording_id=recording_id,
-            message="스트림 URL로 녹화를 시작했습니다.",
+            message=f"스트림 URL로 녹화를 시작했습니다. 제목: {broad_title}",
             payload={
                 "playback_url": playback_url,
                 "quality": quality,
@@ -416,6 +417,7 @@ class RecorderManager:
         if remux_result:
             requested_final_path = handle.final_path
             handle.final_path = resolved_final_path
+            completed_filename = handle.final_path.name
             payload: dict[str, Any] = {"final_path": str(handle.final_path)}
             if handle.final_path != requested_final_path:
                 payload["requested_final_path"] = str(requested_final_path)
@@ -426,7 +428,7 @@ class RecorderManager:
                 event_type="record_complete",
                 channel_id=handle.channel_id,
                 recording_id=handle.recording_id,
-                message="녹화 및 remux가 완료되었습니다.",
+                message=f"녹화 및 remux가 완료되었습니다. 파일명: {completed_filename}",
                 payload=payload,
             )
         else:
