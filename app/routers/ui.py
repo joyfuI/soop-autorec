@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sqlite3
@@ -23,6 +24,14 @@ templates.env.filters["fmt_iso_offset"] = format_datetime_iso_offset
 router = APIRouter(tags=["ui"])
 CHANNEL_TAB_KEYS = {"channel", "auth", "proxy"}
 logger = logging.getLogger(__name__)
+STOP_REASON_LABELS = {
+    "manual_dashboard_stop": "대시보드 수동 중지",
+    "offline_confirmed": "오프라인 연속 확인",
+    "new_broadcast_detected": "새 방송 감지",
+    "force_restart": "강제 재시작",
+    "app_shutdown": "앱 종료",
+    "shutdown": "앱 종료",
+}
 
 
 async def _delayed_process_exit(delay_sec: float = 0.3) -> None:
@@ -110,6 +119,21 @@ async def dashboard(
             if normalized_channel_id is not None
             else None
         )
+
+        reason: str | None = None
+        payload_raw = event.get("payload_json")
+        if isinstance(payload_raw, str) and payload_raw.strip():
+            try:
+                payload_obj = json.loads(payload_raw)
+            except json.JSONDecodeError:
+                payload_obj = None
+            if isinstance(payload_obj, dict):
+                reason_raw = payload_obj.get("reason")
+                if reason_raw is not None:
+                    reason_text = str(reason_raw).strip()
+                    reason = reason_text or None
+        event["reason"] = reason
+        event["reason_label"] = STOP_REASON_LABELS.get(reason, reason) if reason else None
     recent_recordings = recording_model.list_recent_recordings(settings, limit=12)
     active_recorder_count = request.app.state.supervisor.recorder.active_count
 

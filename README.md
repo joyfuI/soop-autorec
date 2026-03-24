@@ -64,7 +64,7 @@ services:
       PORT: 8000
       TZ: Asia/Seoul
       POLL_INTERVAL_SEC: 10
-      OFFLINE_CONFIRM_COUNT: 2
+      OFFLINE_CONFIRM_COUNT: 3
       FFMPEG_BINARY: ffmpeg
       APP_SECRET_KEY: ${APP_SECRET_KEY:-}
       BOOTSTRAP_REPO_URL: https://github.com/joyfuI/soop-autorec.git

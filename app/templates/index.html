@@ -244,7 +244,7 @@
                     <td>{{ event_type_labels.get(event.event_type, event.event_type) }}</td>
                     <td class="mono">{{ event.channel_id or "-" }}</td>
                     <td>{{ event.channel_name or "-" }}</td>
-                    <td>{{ event.message }}</td>
+                    <td>{{ event.message }}{% if event.reason_label %} (사유: {{ event.reason_label }}){% endif %}</td>
                   </tr>
                 {% endfor %}
               {% else %}

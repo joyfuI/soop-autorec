@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     timezone: str = Field(default="Asia/Seoul", validation_alias="TZ")
 
     poll_interval_sec: int = Field(default=10, ge=1)
-    offline_confirm_count: int = Field(default=2, ge=1)
+    offline_confirm_count: int = Field(default=3, ge=1)
 
     ffmpeg_binary: str = "ffmpeg"
 
