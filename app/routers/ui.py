@@ -138,8 +138,9 @@ async def dashboard(
     active_recorder_count = request.app.state.supervisor.recorder.active_count
 
     return templates.TemplateResponse(
-        "index.html",
-        {
+        request=request,
+        name="index.html",
+        context={
             "request": request,
             "status": supervisor_state,
             "settings": settings,
@@ -167,8 +168,9 @@ async def channels_page(
     active_recorder_count = request.app.state.supervisor.recorder.active_count
 
     return templates.TemplateResponse(
-        "channels.html",
-        {
+        request=request,
+        name="channels.html",
+        context={
             "request": request,
             "channels": channels,
             "message": message,
