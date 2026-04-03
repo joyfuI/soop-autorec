@@ -2,7 +2,9 @@
 
 SOOP 채널 라이브를 자동 감지해 `streamlink`로 스트림 URL을 해석하고 `ffmpeg`로 녹화/정리(remux)하는 FastAPI 서비스입니다.
 
-이 프로젝트의 초기 구현과 현재 코드베이스는 OpenAI Codex만 사용해 작성되었습니다.
+이 프로젝트는 OpenAI Codex로 만들어졌습니다.
+
+관련 잡담은 [https://blog.joyfui.com/1315](https://blog.joyfui.com/1315)
 
 ## 주요 기능
 
