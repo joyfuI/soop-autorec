@@ -8,7 +8,7 @@
 
 - 서비스: FastAPI + 관리 UI + 백그라운드 supervisor
 - 감지 소스: SOOP `broad` 폴링 API
-- 녹화 파이프라인: `streamlink --stream-url` 해석 -> `ffmpeg` 녹화 -> `ffmpeg -c copy` remux
+- 녹화 파이프라인: `streamlink --stream-url` 해석 -> tmp에 `ffmpeg` 녹화 -> tmp에 `ffmpeg -c copy` remux -> recordings로 이동
 - 저장소: SQLite(`channels`, `settings`, `recordings`) + JSONL 이벤트 로그(`./data/logs/events.jsonl`)
 
 ## 코드로 바로 안 보이는 운영 규칙
@@ -17,6 +17,7 @@
 - `PROBE_ERROR`만으로 녹화를 즉시 중단하지 않는다.
 - 중복 녹화/세션 식별 키는 `(userId, broadNo)`다.
 - 최종 출력 파일명이 충돌하면 remux 단계에서 ` (1)`, ` (2)` 접미사를 붙여 저장하고 기존 파일은 덮어쓰지 않는다.
+- remux/이동 실패 시 0바이트 초과 tmp 파일이 남아 있으면 `partial`로 기록하고 `temp_path`를 복구 경로로 남긴다.
 - 재생 URL은 `https://play.sooplive.co.kr/{userId}` 고정이다.
 - 프록시 설정은 환경변수가 아니라 DB(`control_proxy_url`)로만 관리한다.
 - 프록시는 `streamlink --stream-url` 해석 1회에만 적용하고, 이후 manifest/key/segment 요청은 direct다.

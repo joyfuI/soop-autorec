@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -45,6 +46,7 @@ class RecordingHandle:
     user_id: str
     broad_no: int
     temp_path: Path
+    remux_temp_path: Path
     final_path: Path
     process: asyncio.subprocess.Process
     watch_task: asyncio.Task[None]
@@ -231,6 +233,7 @@ class RecorderManager:
         temp_root = Path(self.settings.temp_root_dir)
         temp_root.mkdir(parents=True, exist_ok=True)
         temp_path = temp_root / self._build_temp_filename(user_id=user_id, broad_no=broad_no)
+        remux_temp_path = temp_root / self._build_remux_temp_filename(user_id=user_id, broad_no=broad_no)
 
         quality = str(channel.get("preferred_quality") or "best")
         proxy_settings = settings_model.get_proxy_settings(self.settings)
@@ -352,6 +355,7 @@ class RecorderManager:
                 "quality": quality,
                 "proxy_enabled_for_resolve": resolver_proxy_url is not None,
                 "temp_path": str(temp_path),
+                "remux_temp_path": str(remux_temp_path),
                 "final_path": str(final_path),
             },
         )
@@ -366,6 +370,7 @@ class RecorderManager:
             user_id=user_id,
             broad_no=broad_no,
             temp_path=temp_path,
+            remux_temp_path=remux_temp_path,
             final_path=final_path,
             process=process,
             watch_task=watch_task,
@@ -407,6 +412,7 @@ class RecorderManager:
         remux_result, resolved_final_path = await self._run_remux(
             recording_id=handle.recording_id,
             temp_path=handle.temp_path,
+            remux_temp_path=handle.remux_temp_path,
             final_path=handle.final_path,
             stop_requested=handle.stop_requested,
             stop_reason=handle.stop_reason,
@@ -433,6 +439,8 @@ class RecorderManager:
             )
         else:
             error_message = "녹화가 실패 상태로 종료되었습니다."
+            recovery_path: str | None = None
+            latest_status = "failed"
             latest_recording = recording_model.get_recording_by_id(
                 self.settings,
                 handle.recording_id,
@@ -441,16 +449,42 @@ class RecorderManager:
                 latest_error = str(latest_recording.get("error_message") or "").strip()
                 if latest_error:
                     error_message = latest_error
+                latest_status = str(latest_recording.get("status") or "failed")
+                recovery_path_raw = latest_recording.get("temp_path")
+                if recovery_path_raw is not None:
+                    recovery_path = str(recovery_path_raw).strip() or None
 
-            event_log_model.add_event_log(
-                self.settings,
-                level="error",
-                event_type="record_failed",
-                channel_id=handle.channel_id,
-                recording_id=handle.recording_id,
-                message="녹화가 실패 상태로 종료되었습니다.",
-                payload={"exit_code": exit_code, "stderr_tail": stderr_tail},
-            )
+            payload: dict[str, Any] = {"exit_code": exit_code, "stderr_tail": stderr_tail}
+            if recovery_path:
+                payload["recovery_path"] = recovery_path
+            if latest_recording is not None:
+                final_path_value = str(latest_recording.get("final_path") or "").strip()
+                if final_path_value:
+                    payload["final_path"] = final_path_value
+
+            if latest_status == "partial":
+                partial_message = "녹화가 partial 상태로 종료되었습니다."
+                if recovery_path:
+                    partial_message = f"{partial_message} 복구 파일: {recovery_path}"
+                event_log_model.add_event_log(
+                    self.settings,
+                    level="warning",
+                    event_type="record_partial",
+                    channel_id=handle.channel_id,
+                    recording_id=handle.recording_id,
+                    message=partial_message,
+                    payload=payload,
+                )
+            else:
+                event_log_model.add_event_log(
+                    self.settings,
+                    level="error",
+                    event_type="record_failed",
+                    channel_id=handle.channel_id,
+                    recording_id=handle.recording_id,
+                    message="녹화가 실패 상태로 종료되었습니다.",
+                    payload=payload,
+                )
             channel_model.update_last_error(
                 self.settings,
                 handle.channel_id,
@@ -467,13 +501,15 @@ class RecorderManager:
         *,
         recording_id: int,
         temp_path: Path,
+        remux_temp_path: Path,
         final_path: Path,
         stop_requested: bool,
         stop_reason: str | None,
         recorder_exit_code: int | None,
         recorder_stderr: str,
     ) -> tuple[bool, Path]:
-        if not temp_path.exists() or temp_path.stat().st_size == 0:
+        source_exists = temp_path.exists() and temp_path.stat().st_size > 0
+        if not source_exists:
             message = "녹화 프로세스가 종료됐지만 녹화 데이터가 생성되지 않았습니다."
             if recorder_stderr:
                 message = f"{message} stderr: {recorder_stderr}"
@@ -481,9 +517,17 @@ class RecorderManager:
                 self.settings,
                 recording_id,
                 status="failed",
+                temp_path=None,
                 error_message=message,
             )
             return False, final_path
+
+        recording_model.update_recording_fields(
+            self.settings,
+            recording_id,
+            temp_path=str(temp_path),
+            final_path=str(final_path),
+        )
 
         recording_model.update_recording_fields(
             self.settings,
@@ -497,14 +541,21 @@ class RecorderManager:
             if candidate_path.exists():
                 continue
 
+            remux_output_path = self._build_remux_output_candidate(
+                remux_temp_path=remux_temp_path,
+                index=index,
+            )
+            remux_output_path.parent.mkdir(parents=True, exist_ok=True)
+            remux_output_path.unlink(missing_ok=True)
+
             ffmpeg_cmd = [
                 self.settings.ffmpeg_binary,
-                "-n",
+                "-y",
                 "-i",
                 str(temp_path),
                 "-c",
                 "copy",
-                str(candidate_path),
+                str(remux_output_path),
             ]
 
             try:
@@ -534,9 +585,29 @@ class RecorderManager:
 
             if (
                 ffmpeg_exit_code == 0
-                and candidate_path.exists()
-                and candidate_path.stat().st_size > 0
+                and remux_output_path.exists()
+                and remux_output_path.stat().st_size > 0
             ):
+                try:
+                    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(remux_output_path, candidate_path)
+                except OSError as exc:
+                    reason = (
+                        f"remux 완료 파일 이동에 실패했습니다: {exc}. "
+                        f"복구 파일: {remux_output_path}"
+                    )
+                    recording_model.update_recording_fields(
+                        self.settings,
+                        recording_id,
+                        status="partial",
+                        temp_path=str(remux_output_path),
+                        final_path=str(candidate_path),
+                        ffmpeg_exit_code=ffmpeg_exit_code,
+                        file_size_bytes=remux_output_path.stat().st_size,
+                        error_message=reason,
+                    )
+                    return False, final_path
+
                 file_size = candidate_path.stat().st_size
                 recording_model.update_recording_fields(
                     self.settings,
@@ -547,20 +618,18 @@ class RecorderManager:
                     final_path=str(candidate_path),
                     error_message=None,
                 )
-                try:
-                    temp_path.unlink(missing_ok=True)
-                except OSError:
-                    logger.warning("임시 파일 삭제에 실패했습니다: %s", temp_path)
+                for cleanup_path in (temp_path, remux_output_path):
+                    try:
+                        cleanup_path.unlink(missing_ok=True)
+                    except OSError:
+                        logger.warning("임시 파일 삭제에 실패했습니다: %s", cleanup_path)
                 return True, candidate_path
 
-            if self._is_ffmpeg_output_exists_error(ffmpeg_stderr):
-                continue
-
-            failure_status = (
-                "partial"
-                if candidate_path.exists() and candidate_path.stat().st_size > 0
-                else "failed"
+            recovery_path = self._resolve_recovery_path(
+                remux_output_path=remux_output_path,
+                temp_path=temp_path,
             )
+            failure_status = "partial" if recovery_path is not None else "failed"
             reason = "ffmpeg remux에 실패했습니다"
             if ffmpeg_tail:
                 reason = f"{reason}: {ffmpeg_tail}"
@@ -568,25 +637,38 @@ class RecorderManager:
                 reason = f"{reason} (stop_reason={stop_reason})"
             if recorder_exit_code not in (0, None):
                 reason = f"{reason}; record_exit_code={recorder_exit_code}"
+            if recovery_path is not None:
+                reason = f"{reason}; 복구 파일: {recovery_path}"
 
             recording_model.update_recording_fields(
                 self.settings,
                 recording_id,
                 status=failure_status,
+                temp_path=str(recovery_path) if recovery_path is not None else None,
                 ffmpeg_exit_code=ffmpeg_exit_code,
+                file_size_bytes=recovery_path.stat().st_size if recovery_path is not None else None,
                 final_path=str(candidate_path),
                 error_message=reason,
             )
             return False, candidate_path
 
+        recovery_path = self._resolve_recovery_path(
+            remux_output_path=remux_temp_path,
+            temp_path=temp_path,
+        )
+
         reason = (
             "ffmpeg remux 출력 경로가 모두 사용 중이라 저장에 실패했습니다. "
             f"확인한 후보 수: {MAX_FINAL_PATH_CANDIDATES}"
         )
+        if recovery_path is not None:
+            reason = f"{reason}; 복구 파일: {recovery_path}"
         recording_model.update_recording_fields(
             self.settings,
             recording_id,
-            status="failed",
+            status="partial" if recovery_path is not None else "failed",
+            temp_path=str(recovery_path) if recovery_path is not None else None,
+            file_size_bytes=recovery_path.stat().st_size if recovery_path is not None else None,
             error_message=reason,
         )
         return False, final_path
@@ -611,9 +693,26 @@ class RecorderManager:
             return base_path
         return base_path.with_name(f"{base_path.stem} ({index}){base_path.suffix}")
 
-    def _is_ffmpeg_output_exists_error(self, stderr_text: str) -> bool:
-        normalized = stderr_text.lower()
-        return "already exists" in normalized
+    def _build_remux_output_candidate(self, *, remux_temp_path: Path, index: int) -> Path:
+        if index <= 0:
+            return remux_temp_path
+        return remux_temp_path.with_name(
+            f"{remux_temp_path.stem} ({index}){remux_temp_path.suffix}"
+        )
+
+    def _resolve_recovery_path(
+        self,
+        *,
+        remux_output_path: Path,
+        temp_path: Path,
+    ) -> Path | None:
+        for candidate in (remux_output_path, temp_path):
+            try:
+                if candidate.exists() and candidate.stat().st_size > 0:
+                    return candidate
+            except OSError:
+                continue
+        return None
 
     def _render_relative_output_path(
         self,
@@ -654,6 +753,11 @@ class RecorderManager:
         user = sanitize_filename_component(user_id, fallback="unknown")
         stamp = now_utc().strftime("%Y%m%d_%H%M%S")
         return f"{user}_{broad_no}_{stamp}.mkv"
+
+    def _build_remux_temp_filename(self, *, user_id: str, broad_no: int) -> str:
+        user = sanitize_filename_component(user_id, fallback="unknown")
+        stamp = now_utc().strftime("%Y%m%d_%H%M%S")
+        return f"{user}_{broad_no}_{stamp}.mp4"
 
     def _build_resolve_stream_url_cmd(
         self,
