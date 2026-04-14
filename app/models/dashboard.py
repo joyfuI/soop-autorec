@@ -10,6 +10,15 @@ def fetch_dashboard_summary(settings: Settings) -> dict[str, int]:
         enabled_channels = conn.execute(
             "SELECT COUNT(*) AS count FROM channels WHERE enabled = 1"
         ).fetchone()["count"]
+        online_channels = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM channels
+            WHERE last_broad_no IS NOT NULL
+              AND offline_streak = 0
+              AND last_status IN ('online', 'recording', 'standby_no_stream', 'stopping', 'error')
+            """
+        ).fetchone()["count"]
         recording_channels = conn.execute(
             "SELECT COUNT(*) AS count FROM channels WHERE last_status = 'recording'"
         ).fetchone()["count"]
@@ -20,6 +29,7 @@ def fetch_dashboard_summary(settings: Settings) -> dict[str, int]:
     return {
         "total_channels": int(total_channels),
         "enabled_channels": int(enabled_channels),
+        "online_channels": int(online_channels),
         "recording_channels": int(recording_channels),
         "error_channels": int(error_channels),
     }

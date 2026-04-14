@@ -43,7 +43,6 @@ async def api_status(request: Request) -> dict:
         event_log_mtime_ns,
         recording_max_id,
         channel_dashboard_cursor,
-        channel_count,
     ) = _fetch_stream_db_cursor(settings)
     return {
         "running": state.running,
@@ -51,19 +50,16 @@ async def api_status(request: Request) -> dict:
         "last_probe_at": state.last_probe_at,
         "last_iteration_finished_at": state.last_iteration_finished_at,
         "last_channel_count": state.last_channel_count,
-        "last_live_count": state.last_live_count,
-        "last_probe_error_count": state.last_probe_error_count,
         "active_recorder_count": state.active_recorder_count,
         "last_error": state.last_error,
         "event_log_size": event_log_size,
         "event_log_mtime_ns": event_log_mtime_ns,
         "recording_max_id": recording_max_id,
         "channel_dashboard_cursor": channel_dashboard_cursor,
-        "channel_count": channel_count,
     }
 
 
-def _fetch_stream_db_cursor(settings: Settings) -> tuple[int, int, int, str, int]:
+def _fetch_stream_db_cursor(settings: Settings) -> tuple[int, int, int, str]:
     event_log_size, event_log_mtime_ns = event_log_model.get_event_log_cursor(settings)
 
     with connect(settings) as conn:
@@ -86,21 +82,18 @@ def _fetch_stream_db_cursor(settings: Settings) -> tuple[int, int, int, str, int
         ).fetchall()
 
     recording_max_id = int(recording_row["max_id"]) if recording_row is not None else 0
-    channel_dashboard_cursor, channel_count = _build_channel_dashboard_cursor(channel_rows)
+    channel_dashboard_cursor = _build_channel_dashboard_cursor(channel_rows)
     return (
         event_log_size,
         event_log_mtime_ns,
         recording_max_id,
         channel_dashboard_cursor,
-        channel_count,
     )
 
 
-def _build_channel_dashboard_cursor(channel_rows) -> tuple[str, int]:
+def _build_channel_dashboard_cursor(channel_rows) -> str:
     hasher = hashlib.sha256()
-    channel_count = 0
     for row in channel_rows:
-        channel_count += 1
         hasher.update(str(row["id"]).encode("utf-8"))
         hasher.update(b"\x1f")
         hasher.update(str(row["user_id"] or "").encode("utf-8"))
@@ -115,7 +108,7 @@ def _build_channel_dashboard_cursor(channel_rows) -> tuple[str, int]:
         hasher.update(b"\x1f")
         hasher.update(str(row["last_probe_at"] or "").encode("utf-8"))
         hasher.update(b"\x1e")
-    return hasher.hexdigest(), channel_count
+    return hasher.hexdigest()
 
 
 def _build_stream_state_key(settings: Settings, state: SupervisorState) -> tuple:
@@ -124,16 +117,13 @@ def _build_stream_state_key(settings: Settings, state: SupervisorState) -> tuple
         event_log_mtime_ns,
         recording_max_id,
         channel_dashboard_cursor,
-        channel_count,
     ) = _fetch_stream_db_cursor(settings)
     return (
-        state.last_probe_error_count,
         state.active_recorder_count,
         event_log_size,
         event_log_mtime_ns,
         recording_max_id,
         channel_dashboard_cursor,
-        channel_count,
     )
 
 

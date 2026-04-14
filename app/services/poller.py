@@ -29,8 +29,6 @@ class SupervisorState:
     running: bool = False
     last_error: str | None = None
     last_channel_count: int = 0
-    last_live_count: int = 0
-    last_probe_error_count: int = 0
     active_recorder_count: int = 0
 
 
@@ -143,9 +141,6 @@ class Supervisor:
         self.state.iteration_count += 1
         self.state.last_channel_count = len(all_channels)
 
-        live_count = 0
-        probe_error_count = 0
-
         for channel in all_channels:
             channel_id = int(channel["id"])
             force_probe = channel_id in forced_probe_channel_ids
@@ -156,7 +151,6 @@ class Supervisor:
             self.state.last_probe_at = now_utc()
 
             if result.status == ProbeStatus.LIVE:
-                live_count += 1
                 manual_record_requested = channel_id in manual_record_request_channel_ids
                 allow_auto_start = bool(channel.get("enabled")) or (
                     manual_record_requested
@@ -170,11 +164,7 @@ class Supervisor:
             elif result.status == ProbeStatus.OFFLINE:
                 await self._handle_offline(channel)
             else:
-                probe_error_count += 1
                 self._handle_probe_error(channel, result)
-
-        self.state.last_live_count = live_count
-        self.state.last_probe_error_count = probe_error_count
 
     def _pop_forced_probe_channel_ids(self, channels: list[dict]) -> set[int]:
         if not self._force_probe_channel_ids:

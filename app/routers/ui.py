@@ -122,17 +122,17 @@ async def dashboard(
 
         reason: str | None = None
         payload_raw = event.get("payload_json")
+        payload_obj = None
         if isinstance(payload_raw, str) and payload_raw.strip():
             try:
                 payload_obj = json.loads(payload_raw)
             except json.JSONDecodeError:
                 payload_obj = None
-            if isinstance(payload_obj, dict):
-                reason_raw = payload_obj.get("reason")
-                if reason_raw is not None:
-                    reason_text = str(reason_raw).strip()
-                    reason = reason_text or None
-        event["reason"] = reason
+        if isinstance(payload_obj, dict):
+            reason_raw = payload_obj.get("reason")
+            if reason_raw is not None:
+                reason_text = str(reason_raw).strip()
+                reason = reason_text or None
         event["reason_label"] = STOP_REASON_LABELS.get(reason, reason) if reason else None
     recent_recordings = recording_model.list_recent_recordings(settings, limit=12)
     active_recorder_count = request.app.state.supervisor.recorder.active_count
