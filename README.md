@@ -85,6 +85,7 @@ docker compose up -d
 
 - 런타임 데이터 경로: `./data -> /workspace/data`
 - 업데이트에 실패하면 기존 상태로 실행을 시도합니다.
+- 최초 clone 전에 bind mount에 남아 있는 빈 `data/.gitkeep` placeholder는 checkout 충돌 방지를 위해 제거됩니다.
 - `/workspace`는 컨테이너 내부 writable layer를 사용하므로, 컨테이너 재생성 시 코드/.venv는 초기화됩니다.
 
 ## 인증 설정

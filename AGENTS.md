@@ -56,6 +56,7 @@
 - `uv sync` 실패 시 경고 로그 후 기존 `.venv`로 계속한다.
 - 단, 최초 기동에서 clone/sync가 모두 실패해 실행 가능한 코드/환경이 없으면 기동 실패한다.
 - Compose는 `./data -> /workspace/data`만 bind mount한다.
+- 최초 clone 전 bind mount의 빈 `data/.gitkeep` placeholder는 checkout 충돌 방지를 위해 제거될 수 있다.
 - `/workspace`는 컨테이너 writable layer이므로 컨테이너 재생성 시 코드/.venv는 초기화된다.
 
 ## 경로/설정 고정값

@@ -9,6 +9,18 @@ log() {
   printf '[bootstrap] %s\n' "$*"
 }
 
+remove_data_placeholder() {
+  local placeholder="${APP_DIR}/data/.gitkeep"
+
+  if [[ -f "${placeholder}" && ! -s "${placeholder}" ]]; then
+    if rm -f "${placeholder}"; then
+      log "removed empty data/.gitkeep placeholder before checkout."
+    else
+      log "warning: failed to remove empty data/.gitkeep placeholder."
+    fi
+  fi
+}
+
 ensure_repo() {
   mkdir -p "${APP_DIR}"
 
@@ -20,6 +32,8 @@ ensure_repo() {
     log "warning: ${APP_DIR} has project files but is not a git repository. Using existing files."
     return 0
   fi
+
+  remove_data_placeholder
 
   log "bootstrapping repository: ${BOOTSTRAP_REPO_URL} (${BOOTSTRAP_REPO_BRANCH})"
   if git -C "${APP_DIR}" init -q \
