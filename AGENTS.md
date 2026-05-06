@@ -8,7 +8,7 @@
 
 - 서비스: FastAPI + 관리 UI + 백그라운드 supervisor
 - 감지 소스: SOOP `broad` 폴링 API
-- 녹화 파이프라인: `streamlink --stream-url` 해석 -> tmp에 `ffmpeg` 녹화 -> tmp에 `ffmpeg -c copy` remux -> recordings로 이동
+- 녹화 파이프라인: 일반 방송은 `streamlink --stream-url` 해석, 구독플러스 방송은 SOOP 플레이어 API/private auth 해석 -> tmp에 `ffmpeg` 녹화 -> tmp에 `ffmpeg -c copy` remux -> recordings로 이동
 - 저장소: SQLite(`channels`, `settings`, `recordings`) + JSONL 이벤트 로그(`./data/logs/events.jsonl`)
 
 ## 코드로 바로 안 보이는 운영 규칙
@@ -19,9 +19,14 @@
 - 최종 출력 파일명이 충돌하면 remux 단계에서 ` (1)`, ` (2)` 접미사를 붙여 저장하고 기존 파일은 덮어쓰지 않는다.
 - remux/이동 실패 시 0바이트 초과 tmp 파일이 남아 있으면 `partial`로 기록하고 `temp_path`를 복구 경로로 남긴다.
 - 재생 URL은 `https://play.sooplive.co.kr/{userId}` 고정이다.
+- 구독플러스 감지는 `broad` payload의 `subscriptionOnly > 0`을 힌트로 쓰고, `player_live_api.php` 응답의 `TS_TYPE=2` 및 `TS` URL로 확정한다.
+- 구독플러스 녹화는 `private_auth.php`로 받은 `CloudFront-*` 서명 쿠키를 `ffmpeg -headers`에 전달한다.
+- 구독플러스 인증은 `cookies.txt`를 우선 사용하고, 없거나 권한 확인에 실패하면 저장된 `username/password`로 프록시 없이 direct 로그인해 SOOP 쿠키를 만든 뒤 1회 재시도한다.
+- 구독플러스 인증 실패 시 기존 streamlink 경로로 fallback하지 않는다.
+- 구독플러스 referer/origin은 공식 플레이어 흐름에 맞춰 `https://play.sooplive.com/{userId}/{broadNo}` / `https://play.sooplive.com`을 사용한다.
 - 프록시 설정은 환경변수가 아니라 DB(`control_proxy_url`)로만 관리한다.
 - 프록시 URL의 username/password 예약 문자는 저장 시 percent-encoding으로 정규화한다.
-- 프록시는 `streamlink --stream-url` 해석 1회에만 적용하고, 이후 manifest/key/segment 요청은 direct다.
+- 프록시는 `streamlink --stream-url` 또는 구독플러스 `player_live_api.php`/`private_auth.php` 해석에만 적용한다. `username/password` 직접 로그인과 이후 manifest/key/segment 요청은 direct다.
 - 수동 중단된 채널이 같은 `broadNo`로 계속 라이브 상태면 자동 녹화를 재시작하지 않고 `online` 상태를 유지한다(재시도/오프라인/새 방송 번호에서 해제).
 - 장시간 작업은 request-context가 아니라 lifespan supervisor에서만 처리한다.
 - SQLite 단일 writer 제약 때문에 Uvicorn worker는 1을 유지한다.

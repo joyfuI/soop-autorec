@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import logging
@@ -17,6 +17,11 @@ from app.models import recording as recording_model
 from app.models import settings as settings_model
 from app.services.filename_renderer import FilenameRenderer
 from app.services.playback_url import build_playback_url
+from app.services.soop_subscription import (
+    SubscriptionPlusResolveError,
+    has_subscription_plus_hint,
+    resolve_subscription_plus_stream,
+)
 from app.utils.sanitize import sanitize_filename_component
 from app.utils.time import now_utc
 
@@ -239,17 +244,62 @@ class RecorderManager:
         )
 
         quality = str(channel.get("preferred_quality") or "best")
+        record_headers: dict[str, str] = {}
+        resolver_name = "streamlink"
+        resolver_metadata: dict[str, Any] = {}
         try:
-            auth_args = self._build_auth_args(channel)
             proxy_settings = settings_model.get_proxy_settings(self.settings)
             resolver_proxy_url = str(proxy_settings.get("proxy_url") or "").strip() or None
-            resolve_cmd = self._build_resolve_stream_url_cmd(
-                playback_url=playback_url,
-                quality=quality,
-                auth_args=auth_args,
-                proxy_url=resolver_proxy_url,
+            auth = settings_model.get_auth_credentials(self.settings)
+            subscription_stream = None
+            if has_subscription_plus_hint(payload):
+                subscription_stream = await resolve_subscription_plus_stream(
+                    user_id=user_id,
+                    broad_no=broad_no,
+                    stream_password=str(channel.get("stream_password") or "").strip() or None,
+                    preferred_quality=quality,
+                    cookies_txt_path=str(auth.get("cookies_txt_path") or "").strip() or None,
+                    username=str(auth.get("username") or "").strip() or None,
+                    password=str(auth.get("password") or "") or None,
+                    proxy_url=resolver_proxy_url,
+                )
+
+            if subscription_stream is not None:
+                stream_url = subscription_stream.url
+                record_headers = subscription_stream.headers
+                resolver_name = "soop_subscription_plus"
+                resolver_metadata = subscription_stream.metadata
+            else:
+                auth_args = self._build_auth_args(channel)
+                resolve_cmd = self._build_resolve_stream_url_cmd(
+                    playback_url=playback_url,
+                    quality=quality,
+                    auth_args=auth_args,
+                    proxy_url=resolver_proxy_url,
+                )
+                stream_url = await self._resolve_stream_url(resolve_cmd)
+        except SubscriptionPlusResolveError as exc:
+            error_message = str(exc)
+            recording_model.update_recording_fields(
+                self.settings,
+                recording_id,
+                status="failed",
+                error_message=error_message,
             )
-            stream_url = await self._resolve_stream_url(resolve_cmd)
+            event_log_model.add_event_log(
+                self.settings,
+                level="error",
+                event_type="record_start_failed",
+                channel_id=channel_id,
+                recording_id=recording_id,
+                message=error_message,
+            )
+            return EnsureRecordingResult(
+                active=False,
+                started=False,
+                recording_id=recording_id,
+                error=error_message,
+            )
         except StreamUrlNotReadyError as exc:
             standby_message = str(exc)
             recording_model.update_recording_fields(
@@ -293,6 +343,7 @@ class RecorderManager:
         cmd = self._build_record_cmd(
             input_url=stream_url,
             temp_path=temp_path,
+            headers=record_headers,
         )
 
         recording_model.update_recording_with_probe_payload(self.settings, recording_id, payload)
@@ -356,10 +407,12 @@ class RecorderManager:
             payload={
                 "playback_url": playback_url,
                 "quality": quality,
+                "resolver": resolver_name,
                 "proxy_enabled_for_resolve": resolver_proxy_url is not None,
                 "temp_path": str(temp_path),
                 "remux_temp_path": str(remux_temp_path),
                 "final_path": str(final_path),
+                **resolver_metadata,
             },
         )
 
@@ -737,9 +790,7 @@ class RecorderManager:
         )
 
         raw_parts = [
-            part
-            for part in re.split(r"[/\\]+", rendered)
-            if part and part not in {".", ".."}
+            part for part in re.split(r"[/\\]+", rendered) if part and part not in {".", ".."}
         ]
         if not raw_parts:
             raw_parts = [f"{sanitize_filename_component(user_id)}_{broad_no}.mp4"]
@@ -815,16 +866,25 @@ class RecorderManager:
         *,
         input_url: str,
         temp_path: Path,
+        headers: dict[str, str] | None = None,
     ) -> list[str]:
-        return [
+        cmd = [
             self.settings.ffmpeg_binary,
             "-y",
-            "-i",
-            input_url,
-            "-c",
-            "copy",
-            str(temp_path),
         ]
+        if headers:
+            header_blob = "".join(f"{key}: {value}\r\n" for key, value in headers.items())
+            cmd.extend(["-headers", header_blob])
+        cmd.extend(
+            [
+                "-i",
+                input_url,
+                "-c",
+                "copy",
+                str(temp_path),
+            ]
+        )
+        return cmd
 
     def _build_auth_args(self, channel: dict[str, Any]) -> list[str]:
         args: list[str] = []
