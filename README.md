@@ -17,8 +17,8 @@ SOOP 채널 라이브를 자동 감지해 일반 방송은 `streamlink`로, 구�
 - 웹 UI에서 서버 재시작 요청 지원
 - 인증 방식 2종 지원 (`username/password`, `cookies.txt`)
 - 채널별 stream password 지원
-- 선택적 프록시 지원 (stream URL 해석 1회에만 프록시)
-- 구독플러스 방송 감지 및 전용 인증 흐름 지원
+- 선택적 프록시 지원 (일반 방송은 stream URL 해석, 구독플러스는 인증/주소 해석에만 프록시)
+- 구독플러스 방송 감지 및 로컬 HLS 프록시 기반 인증 갱신 지원
 
 ## 요구사항
 
@@ -93,7 +93,8 @@ docker compose up -d
 
 - UI: `/channels` 상단의 전역 인증 설정 폼
 - API: `GET /api/settings/auth`, `PUT /api/settings/auth`
-- 구독플러스 방송은 `player_live_api.php`와 `private_auth.php` 흐름으로 CloudFront 서명 쿠키를 받은 뒤 `ffmpeg`에 전달합니다.
+- 구독플러스 방송은 `player_live_api.php`와 `private_auth.php` 흐름으로 CloudFront 서명 쿠키를 받은 뒤 로컬 HLS 프록시를 통해 `ffmpeg`에 전달합니다.
+- 구독플러스 CloudFront 쿠키는 수명이 짧아, 녹화 중 로컬 HLS 프록시가 `private_auth.php`를 주기적으로 다시 호출해 갱신합니다.
 - 구독플러스 방송 인증은 해당 방송 시청 권한이 있는 브라우저에서 내보낸 `cookies.txt`를 우선 사용합니다.
 - `cookies.txt`가 없거나 권한 확인에 실패하고 `username/password`가 저장되어 있으면, 프록시 없이 직접 로그인해 SOOP 쿠키를 만든 뒤 한 번 재시도합니다.
 - Docker에서 `cookies.txt`를 사용할 때는 컨테이너 내부 경로(`/workspace/data/cookies/...`)를 설정해야 합니다.
@@ -103,7 +104,7 @@ docker compose up -d
 - UI: `/channels`의 `프록시 설정` 폼
 - API: `GET /api/settings/proxy`, `PUT /api/settings/proxy`
 - 프록시 URL의 username/password에 포함된 예약 문자(`&`, `(`, `)`, `@` 등)는 저장 시 percent-encoding으로 정규화됩니다.
-- 구독플러스에서 프록시는 `player_live_api.php`와 `private_auth.php` 해석 단계에만 적용되며, username/password 직접 로그인과 실제 `ffmpeg` 녹화 트래픽은 direct로 요청합니다.
+- 구독플러스에서 프록시는 `player_live_api.php`와 `private_auth.php` 해석/갱신 단계에만 적용되며, username/password 직접 로그인과 실제 CDN manifest/segment 트래픽은 direct로 요청합니다.
 
 ## output_template 변수
 

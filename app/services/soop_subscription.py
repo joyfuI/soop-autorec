@@ -1,17 +1,27 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import json
+import logging
+import threading
 import time
 from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 CHANNEL_API_URL = "https://live.sooplive.com/afreeca/player_live_api.php"
 PRIVATE_AUTH_URL = "https://live.sooplive.com/api/private_auth.php"
 LOGIN_URL = "https://login.sooplive.com/app/LoginAction.php"
 LOGIN_REQUIRED_RESULT = -6
 LOGIN_RESULT_OK = 1
+SUBSCRIPTION_PROXY_REFRESH_MARGIN_SEC = 25
 CLOUDFRONT_COOKIE_NAMES = {
     "CloudFront-Signature",
     "CloudFront-Key-Pair-Id",
@@ -32,7 +42,8 @@ class SubscriptionPlusResolveError(ValueError):
 @dataclass
 class SubscriptionPlusStream:
     url: str
-    headers: dict[str, str]
+    cookies: dict[str, str] = field(default_factory=dict)
+    browser_headers: dict[str, str] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -41,6 +52,230 @@ def has_subscription_plus_hint(payload: dict[str, Any]) -> bool:
         return int(payload.get("subscriptionOnly") or 0) > 0
     except TypeError, ValueError:
         return False
+
+
+class SubscriptionPlusHlsProxy:
+    """Local HLS proxy that refreshes short-lived CloudFront cookies for ffmpeg."""
+
+    def __init__(
+        self,
+        *,
+        stream: SubscriptionPlusStream,
+        user_id: str,
+        broad_no: int,
+        proxy_url: str | None,
+        timeout_sec: float = 20.0,
+    ) -> None:
+        self.stream_url = stream.url
+        self.user_id = user_id
+        self.broad_no = broad_no
+        self.proxy_url = proxy_url
+        self.timeout_sec = timeout_sec
+        self._browser_headers = dict(stream.browser_headers)
+        self._cookies = dict(stream.cookies)
+        self._base_cookies = {
+            name: value
+            for name, value in self._cookies.items()
+            if name not in CLOUDFRONT_COOKIE_NAMES
+        }
+        self._lock = threading.RLock()
+        self._server: ThreadingHTTPServer | None = None
+        self._thread: threading.Thread | None = None
+        self._origin = _url_origin(stream.url)
+        self._expires_at = _cloudfront_policy_expires_at(self._cookies)
+        self.refresh_count = 0
+
+    @property
+    def url(self) -> str:
+        if self._server is None:
+            raise RuntimeError("SubscriptionPlusHlsProxy is not started")
+        host, port = self._server.server_address[:2]
+        return f"http://{host}:{port}/playlist.m3u8"
+
+    def start(self) -> str:
+        if self._server is not None:
+            return self.url
+
+        handler = _build_hls_proxy_handler(self)
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        except OSError as exc:
+            raise SubscriptionPlusResolveError(
+                "구독플러스 로컬 HLS 프록시 시작에 실패했습니다."
+            ) from exc
+        server.daemon_threads = True
+        thread = threading.Thread(
+            target=server.serve_forever,
+            name=f"subscription-hls-proxy-{self.user_id}-{self.broad_no}",
+            daemon=True,
+        )
+        thread.start()
+        self._server = server
+        self._thread = thread
+        return self.url
+
+    def stop(self) -> None:
+        server = self._server
+        thread = self._thread
+        self._server = None
+        self._thread = None
+
+        if server is None:
+            return
+
+        server.shutdown()
+        server.server_close()
+        if thread is not None:
+            thread.join(timeout=5)
+
+    def handle_request(self, request: BaseHTTPRequestHandler) -> None:
+        upstream_url = self._resolve_upstream_url(request.path)
+        try:
+            headers = self._build_upstream_headers(request)
+            with httpx.Client(
+                timeout=self.timeout_sec,
+                follow_redirects=False,
+                headers=headers,
+                trust_env=False,
+            ) as client:
+                response = client.get(upstream_url)
+        except Exception as exc:  # pragma: no cover - network-dependent guardrail
+            logger.warning(
+                "구독플러스 로컬 HLS 프록시 요청에 실패했습니다: %s",
+                type(exc).__name__,
+            )
+            self._send_error(request, 502)
+            return
+
+        self._send_response(request, response, is_manifest=self._is_manifest_request(request.path))
+
+    def _resolve_upstream_url(self, path: str) -> str:
+        if self._is_manifest_request(path):
+            return self.stream_url
+        return urljoin(self._origin, path)
+
+    def _build_upstream_headers(self, request: BaseHTTPRequestHandler) -> dict[str, str]:
+        self._ensure_fresh_cookies()
+        headers = _build_record_headers_from_cookie_dict(
+            self._cookies,
+            user_id=self.user_id,
+            broad_no=self.broad_no,
+        )
+
+        range_header = request.headers.get("Range")
+        if range_header:
+            headers["Range"] = range_header
+
+        accept_header = request.headers.get("Accept")
+        if accept_header:
+            headers["Accept"] = accept_header
+
+        return headers
+
+    def _ensure_fresh_cookies(self) -> None:
+        with self._lock:
+            now = time.time()
+            if self._expires_at and self._expires_at - now > SUBSCRIPTION_PROXY_REFRESH_MARGIN_SEC:
+                return
+
+            cookies, expires_at = self._refresh_cloudfront_cookies()
+            self._cookies = cookies
+            self._base_cookies = _exclude_cloudfront_cookies(cookies)
+            self._expires_at = expires_at
+            self.refresh_count += 1
+
+    def _refresh_cloudfront_cookies(self) -> tuple[dict[str, str], int | None]:
+        client_kwargs = _build_client_kwargs(
+            cookies=self._base_cookies,
+            headers=self._browser_headers,
+            proxy_url=self.proxy_url,
+            timeout_sec=self.timeout_sec,
+        )
+        with httpx.Client(**client_kwargs) as client:
+            private_auth = _authorize_private_stream_sync(
+                client,
+                user_id=self.user_id,
+                broad_no=self.broad_no,
+                ts_url=self.stream_url,
+            )
+            private_result = _parse_int(private_auth.get("result"))
+            if private_result != 1:
+                raise SubscriptionPlusResolveError(
+                    "구독플러스 방송 CDN 인증 갱신에 실패했습니다."
+                )
+
+            cookie_names = _cookie_names(client.cookies)
+            missing = sorted(CLOUDFRONT_COOKIE_NAMES - cookie_names)
+            if missing:
+                raise SubscriptionPlusResolveError(
+                    "구독플러스 방송 CDN 인증 갱신 쿠키가 없습니다: " + ", ".join(missing)
+                )
+
+            cookies = _cookies_to_dict(client.cookies)
+            return cookies, _cloudfront_policy_expires_at(cookies)
+
+    def _send_response(
+        self,
+        request: BaseHTTPRequestHandler,
+        response: httpx.Response,
+        *,
+        is_manifest: bool,
+    ) -> None:
+        body = response.content
+        headers: dict[str, str] = {}
+        if is_manifest and response.status_code < 400:
+            text = response.text
+            body = self._rewrite_manifest(text).encode("utf-8")
+            headers["Content-Type"] = "application/vnd.apple.mpegurl"
+        else:
+            for key in ("Content-Type", "Content-Range", "Accept-Ranges"):
+                value = response.headers.get(key)
+                if value:
+                    headers[key] = value
+
+        headers["Content-Length"] = str(len(body))
+
+        request.send_response(response.status_code)
+        for key, value in headers.items():
+            request.send_header(key, value)
+        request.end_headers()
+        if request.command != "HEAD":
+            try:
+                request.wfile.write(body)
+            except OSError:
+                return
+
+    def _send_error(self, request: BaseHTTPRequestHandler, status_code: int) -> None:
+        body = b"local hls proxy request failed"
+        request.send_response(status_code)
+        request.send_header("Content-Type", "text/plain; charset=utf-8")
+        request.send_header("Content-Length", str(len(body)))
+        request.end_headers()
+        if request.command != "HEAD":
+            try:
+                request.wfile.write(body)
+            except OSError:
+                return
+
+    def _rewrite_manifest(self, text: str) -> str:
+        return text.replace(self._origin, "")
+
+    def _is_manifest_request(self, path: str) -> bool:
+        return path.startswith("/playlist.m3u8")
+
+
+def _build_hls_proxy_handler(proxy: SubscriptionPlusHlsProxy) -> type[BaseHTTPRequestHandler]:
+    class SubscriptionPlusHlsProxyHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            proxy.handle_request(self)
+
+        def do_HEAD(self) -> None:
+            proxy.handle_request(self)
+
+        def log_message(self, fmt: str, *args: Any) -> None:
+            return
+
+    return SubscriptionPlusHlsProxyHandler
 
 
 async def resolve_subscription_plus_stream(
@@ -148,14 +383,10 @@ async def resolve_subscription_plus_stream(
                     "구독플러스 방송 CDN 인증 쿠키가 없습니다: " + ", ".join(missing)
                 )
 
-            record_headers = _build_record_headers(
-                client.cookies,
-                user_id=user_id,
-                broad_no=broad_no,
-            )
             return SubscriptionPlusStream(
                 url=ts_url,
-                headers=record_headers,
+                cookies=_cookies_to_dict(client.cookies),
+                browser_headers=headers,
                 metadata={
                     "resolver": "soop_subscription_plus",
                     "auth_source": auth_source,
@@ -182,6 +413,7 @@ def _build_client_kwargs(
         "follow_redirects": False,
         "cookies": cookies,
         "headers": headers,
+        "trust_env": False,
     }
     if proxy_url:
         client_kwargs["proxy"] = proxy_url
@@ -199,6 +431,7 @@ async def _create_direct_login_cookies(
         timeout=timeout_sec,
         follow_redirects=False,
         headers=headers,
+        trust_env=False,
     ) as client:
         if not await _login(client, username=username, password=password):
             return {}
@@ -248,6 +481,58 @@ def _cookies_to_dict(
 
 def _cookie_names(cookies: httpx.Cookies) -> set[str]:
     return {cookie.name for cookie in cookies.jar}
+
+
+def _exclude_cloudfront_cookies(cookies: dict[str, str]) -> dict[str, str]:
+    return {
+        name: value
+        for name, value in cookies.items()
+        if name not in CLOUDFRONT_COOKIE_NAMES
+    }
+
+
+def _build_record_headers_from_cookie_dict(
+    cookies: dict[str, str],
+    *,
+    user_id: str,
+    broad_no: int,
+) -> dict[str, str]:
+    cookie_header = "; ".join(f"{name}={value}" for name, value in cookies.items())
+    return {
+        "Cookie": cookie_header,
+        "User-Agent": USER_AGENT,
+        "Referer": _build_subscription_referer(user_id=user_id, broad_no=broad_no),
+        "Origin": PLAYBACK_ORIGIN,
+    }
+
+
+def _url_origin(url: str) -> str:
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _cloudfront_policy_expires_at(cookies: dict[str, str]) -> int | None:
+    policy = cookies.get("CloudFront-Policy")
+    if not policy:
+        return None
+
+    try:
+        normalized = policy.replace("-", "+").replace("_", "=").replace("~", "/")
+        normalized += "=" * (-len(normalized) % 4)
+        decoded = base64.b64decode(normalized).decode("utf-8")
+        data = json.loads(decoded)
+        return int(
+            data["Statement"][0]["Condition"]["DateLessThan"]["AWS:EpochTime"]
+        )
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+        binascii.Error,
+    ):
+        return None
 
 
 def _load_cookie_file(cookies_txt_path: str | None) -> dict[str, str]:
@@ -371,6 +656,41 @@ async def _authorize_private_stream(
     return data
 
 
+def _authorize_private_stream_sync(
+    client: httpx.Client,
+    *,
+    user_id: str,
+    broad_no: int,
+    ts_url: str,
+) -> dict[str, Any]:
+    response = client.post(
+        PRIVATE_AUTH_URL,
+        data={
+            "type": "sub_timeshift",
+            "strm_id": user_id,
+            "broad_no": str(broad_no),
+            "url": ts_url,
+        },
+    )
+    if response.status_code >= 400:
+        raise SubscriptionPlusResolveError(
+            f"구독플러스 CDN 인증 갱신 요청에 실패했습니다: HTTP {response.status_code}"
+        )
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise SubscriptionPlusResolveError(
+            "구독플러스 CDN 인증 갱신 응답이 JSON이 아닙니다."
+        ) from exc
+
+    if not isinstance(data, dict):
+        raise SubscriptionPlusResolveError(
+            "구독플러스 CDN 인증 갱신 응답 형식이 올바르지 않습니다."
+        )
+    return data
+
+
 async def _login(client: httpx.AsyncClient, *, username: str, password: str) -> bool:
     response = await client.post(
         LOGIN_URL,
@@ -401,23 +721,6 @@ def _build_browser_headers(*, user_id: str, broad_no: int) -> dict[str, str]:
         "User-Agent": USER_AGENT,
         "Origin": PLAYBACK_ORIGIN,
         "Referer": _build_subscription_referer(user_id=user_id, broad_no=broad_no),
-    }
-
-
-def _build_record_headers(
-    cookies: httpx.Cookies,
-    *,
-    user_id: str,
-    broad_no: int,
-) -> dict[str, str]:
-    cookie_header = "; ".join(
-        f"{name}={value}" for name, value in _cookies_to_dict(cookies).items()
-    )
-    return {
-        "Cookie": cookie_header,
-        "User-Agent": USER_AGENT,
-        "Referer": _build_subscription_referer(user_id=user_id, broad_no=broad_no),
-        "Origin": PLAYBACK_ORIGIN,
     }
 
 

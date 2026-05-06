@@ -18,6 +18,7 @@ from app.models import settings as settings_model
 from app.services.filename_renderer import FilenameRenderer
 from app.services.playback_url import build_playback_url
 from app.services.soop_subscription import (
+    SubscriptionPlusHlsProxy,
     SubscriptionPlusResolveError,
     has_subscription_plus_hint,
     resolve_subscription_plus_stream,
@@ -55,6 +56,7 @@ class RecordingHandle:
     final_path: Path
     process: asyncio.subprocess.Process
     watch_task: asyncio.Task[None]
+    subscription_proxy: SubscriptionPlusHlsProxy | None = None
     stop_requested: bool = False
     stop_reason: str | None = None
 
@@ -244,9 +246,9 @@ class RecorderManager:
         )
 
         quality = str(channel.get("preferred_quality") or "best")
-        record_headers: dict[str, str] = {}
         resolver_name = "streamlink"
         resolver_metadata: dict[str, Any] = {}
+        subscription_proxy: SubscriptionPlusHlsProxy | None = None
         try:
             proxy_settings = settings_model.get_proxy_settings(self.settings)
             resolver_proxy_url = str(proxy_settings.get("proxy_url") or "").strip() or None
@@ -265,10 +267,17 @@ class RecorderManager:
                 )
 
             if subscription_stream is not None:
-                stream_url = subscription_stream.url
-                record_headers = subscription_stream.headers
+                subscription_proxy = SubscriptionPlusHlsProxy(
+                    stream=subscription_stream,
+                    user_id=user_id,
+                    broad_no=broad_no,
+                    proxy_url=resolver_proxy_url,
+                )
                 resolver_name = "soop_subscription_plus"
-                resolver_metadata = subscription_stream.metadata
+                resolver_metadata = {
+                    **subscription_stream.metadata,
+                    "local_hls_proxy": True,
+                }
             else:
                 auth_args = self._build_auth_args(channel)
                 resolve_cmd = self._build_resolve_stream_url_cmd(
@@ -338,14 +347,6 @@ class RecorderManager:
                 error=error_message,
             )
 
-        # Proxy is used only for one-time stream URL resolution.
-        # Recording traffic after resolution is direct.
-        cmd = self._build_record_cmd(
-            input_url=stream_url,
-            temp_path=temp_path,
-            headers=record_headers,
-        )
-
         recording_model.update_recording_with_probe_payload(self.settings, recording_id, payload)
         recording_model.update_recording_fields(
             self.settings,
@@ -361,12 +362,46 @@ class RecorderManager:
         )
 
         try:
+            if subscription_proxy is not None:
+                # External proxy is used only by resolver/auth flows.
+                # Subscription media traffic goes through a local HLS proxy and then direct to CDN.
+                stream_url = subscription_proxy.start()
+            cmd = self._build_record_cmd(
+                input_url=stream_url,
+                temp_path=temp_path,
+            )
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
             )
+        except SubscriptionPlusResolveError as exc:
+            if subscription_proxy is not None:
+                subscription_proxy.stop()
+            error_message = str(exc)
+            recording_model.update_recording_fields(
+                self.settings,
+                recording_id,
+                status="failed",
+                error_message=error_message,
+            )
+            event_log_model.add_event_log(
+                self.settings,
+                level="error",
+                event_type="record_start_failed",
+                channel_id=channel_id,
+                recording_id=recording_id,
+                message=error_message,
+            )
+            return EnsureRecordingResult(
+                active=False,
+                started=False,
+                recording_id=recording_id,
+                error=error_message,
+            )
         except OSError as exc:
+            if subscription_proxy is not None:
+                subscription_proxy.stop()
             error_message = f"녹화 프로세스 시작에 실패했습니다: {exc}"
             recording_model.update_recording_fields(
                 self.settings,
@@ -430,6 +465,7 @@ class RecorderManager:
             final_path=final_path,
             process=process,
             watch_task=watch_task,
+            subscription_proxy=subscription_proxy,
         )
 
         async with self._lock:
@@ -454,6 +490,9 @@ class RecorderManager:
             stderr_text = stderr_bytes.decode("utf-8", errors="ignore")
         else:
             await handle.process.wait()
+
+        if handle.subscription_proxy is not None:
+            handle.subscription_proxy.stop()
 
         exit_code = handle.process.returncode
         stopped_at = now_utc().isoformat()
@@ -866,25 +905,16 @@ class RecorderManager:
         *,
         input_url: str,
         temp_path: Path,
-        headers: dict[str, str] | None = None,
     ) -> list[str]:
-        cmd = [
+        return [
             self.settings.ffmpeg_binary,
             "-y",
+            "-i",
+            input_url,
+            "-c",
+            "copy",
+            str(temp_path),
         ]
-        if headers:
-            header_blob = "".join(f"{key}: {value}\r\n" for key, value in headers.items())
-            cmd.extend(["-headers", header_blob])
-        cmd.extend(
-            [
-                "-i",
-                input_url,
-                "-c",
-                "copy",
-                str(temp_path),
-            ]
-        )
-        return cmd
 
     def _build_auth_args(self, channel: dict[str, Any]) -> list[str]:
         args: list[str] = []
