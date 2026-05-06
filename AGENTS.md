@@ -20,6 +20,7 @@
 - remux/이동 실패 시 0바이트 초과 tmp 파일이 남아 있으면 `partial`로 기록하고 `temp_path`를 복구 경로로 남긴다.
 - 재생 URL은 `https://play.sooplive.co.kr/{userId}` 고정이다.
 - 프록시 설정은 환경변수가 아니라 DB(`control_proxy_url`)로만 관리한다.
+- 프록시 URL의 username/password 예약 문자는 저장 시 percent-encoding으로 정규화한다.
 - 프록시는 `streamlink --stream-url` 해석 1회에만 적용하고, 이후 manifest/key/segment 요청은 direct다.
 - 수동 중단된 채널이 같은 `broadNo`로 계속 라이브 상태면 자동 녹화를 재시작하지 않고 `online` 상태를 유지한다(재시도/오프라인/새 방송 번호에서 해제).
 - 장시간 작업은 request-context가 아니라 lifespan supervisor에서만 처리한다.

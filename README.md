@@ -97,6 +97,7 @@ docker compose up -d
 
 - UI: `/channels`의 `프록시 설정` 폼
 - API: `GET /api/settings/proxy`, `PUT /api/settings/proxy`
+- 프록시 URL의 username/password에 포함된 예약 문자(`&`, `(`, `)`, `@` 등)는 저장 시 percent-encoding으로 정규화됩니다.
 
 ## output_template 변수
 

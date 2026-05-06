@@ -239,10 +239,10 @@ class RecorderManager:
         )
 
         quality = str(channel.get("preferred_quality") or "best")
-        proxy_settings = settings_model.get_proxy_settings(self.settings)
-        resolver_proxy_url = str(proxy_settings.get("proxy_url") or "").strip() or None
         try:
             auth_args = self._build_auth_args(channel)
+            proxy_settings = settings_model.get_proxy_settings(self.settings)
+            resolver_proxy_url = str(proxy_settings.get("proxy_url") or "").strip() or None
             resolve_cmd = self._build_resolve_stream_url_cmd(
                 playback_url=playback_url,
                 quality=quality,

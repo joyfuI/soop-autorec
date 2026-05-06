@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from app.config import Settings
 from app.db import connect
@@ -123,14 +123,60 @@ def update_proxy_settings(
         delete_setting(settings, CONTROL_PROXY_URL_KEY)
         return get_proxy_settings(settings)
 
-    _validate_proxy_url(normalized)
+    normalized = normalize_proxy_url(normalized)
     upsert_setting(settings, CONTROL_PROXY_URL_KEY, normalized)
     return get_proxy_settings(settings)
 
 
+def normalize_proxy_url(value: str) -> str:
+    parsed = urlsplit(value.strip())
+    _validate_proxy_url_parts(parsed)
+
+    hostname = parsed.hostname or ""
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("proxy_url port가 올바르지 않습니다.") from exc
+
+    if port is not None:
+        hostname = f"{hostname}:{port}"
+
+    netloc = f"{_normalize_proxy_userinfo(parsed.username, parsed.password)}{hostname}"
+    return urlunsplit(
+        (
+            parsed.scheme.lower(),
+            netloc,
+            parsed.path,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+
+
 def _validate_proxy_url(value: str) -> None:
-    parsed = urlparse(value)
+    parsed = urlsplit(value)
+    _validate_proxy_url_parts(parsed)
+
+
+def _validate_proxy_url_parts(parsed) -> None:
     if parsed.scheme.lower() not in {"http", "https", "socks5", "socks5h"}:
         raise ValueError("proxy_url 스킴은 http, https, socks5, socks5h 중 하나여야 합니다.")
     if not parsed.hostname:
         raise ValueError("proxy_url에는 hostname이 포함되어야 합니다.")
+
+
+def _normalize_proxy_userinfo(username: str | None, password: str | None) -> str:
+    if username is None and password is None:
+        return ""
+
+    userinfo = ""
+    if username is not None:
+        userinfo = quote(unquote(username), safe="")
+
+    if password is not None:
+        userinfo = f"{userinfo}:{quote(unquote(password), safe='')}"
+
+    return f"{userinfo}@"
