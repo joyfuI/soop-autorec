@@ -50,6 +50,7 @@
 ## Docker 운영 모델
 
 - 이미지에는 런타임 도구(`git`, `python`, `uv`, `ffmpeg`)만 포함한다.
+- 현재 Docker base image는 `python:3.14.4-slim`이다.
 - 앱 코드는 컨테이너 부팅 시 `/workspace`로 clone/pull 한다.
 - 부팅 순서: `ensure_repo` -> `git pull` -> `uv sync` -> `uv run --no-sync python -m app.main`
 - `git pull` 실패 시 경고 로그 후 기존 코드로 계속한다.

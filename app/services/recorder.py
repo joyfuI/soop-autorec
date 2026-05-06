@@ -233,7 +233,10 @@ class RecorderManager:
         temp_root = Path(self.settings.temp_root_dir)
         temp_root.mkdir(parents=True, exist_ok=True)
         temp_path = temp_root / self._build_temp_filename(user_id=user_id, broad_no=broad_no)
-        remux_temp_path = temp_root / self._build_remux_temp_filename(user_id=user_id, broad_no=broad_no)
+        remux_temp_path = temp_root / self._build_remux_temp_filename(
+            user_id=user_id,
+            broad_no=broad_no,
+        )
 
         quality = str(channel.get("preferred_quality") or "best")
         proxy_settings = settings_model.get_proxy_settings(self.settings)
@@ -901,4 +904,3 @@ class RecorderManager:
         if len(trimmed) <= max_chars:
             return trimmed
         return trimmed[-max_chars:]
-

@@ -21,7 +21,7 @@ SOOP 채널 라이브를 자동 감지해 `streamlink`로 스트림 URL을 해�
 
 ## 요구사항
 
-- Python 3.12+
+- Python 3.14+
 - `uv`
 - `ffmpeg` (PATH 등록 또는 `FFMPEG_BINARY`로 경로 지정)
 
