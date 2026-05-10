@@ -7,15 +7,17 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlencode, urljoin, urlparse
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
+BROAD_STREAM_ASSIGN_URL = "https://livestream-manager.sooplive.com/broad_stream_assign.html"
 CHANNEL_API_URL = "https://live.sooplive.com/afreeca/player_live_api.php"
 PRIVATE_AUTH_URL = "https://live.sooplive.com/api/private_auth.php"
 LOGIN_URL = "https://login.sooplive.com/app/LoginAction.php"
@@ -45,6 +47,7 @@ class SubscriptionPlusStream:
     cookies: dict[str, str] = field(default_factory=dict)
     browser_headers: dict[str, str] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+    private_auth_type: str = "sub_timeshift"
 
 
 def has_subscription_plus_hint(payload: dict[str, Any]) -> bool:
@@ -71,6 +74,7 @@ class SubscriptionPlusHlsProxy:
         self.broad_no = broad_no
         self.proxy_url = proxy_url
         self.timeout_sec = timeout_sec
+        self.private_auth_type = stream.private_auth_type
         self._browser_headers = dict(stream.browser_headers)
         self._cookies = dict(stream.cookies)
         self._base_cookies = {
@@ -150,7 +154,8 @@ class SubscriptionPlusHlsProxy:
         self._send_response(request, response, is_manifest=self._is_manifest_request(request.path))
 
     def _resolve_upstream_url(self, path: str) -> str:
-        if self._is_manifest_request(path):
+        parsed = urlparse(path)
+        if parsed.path == "/playlist.m3u8":
             return self.stream_url
         return urljoin(self._origin, path)
 
@@ -197,6 +202,7 @@ class SubscriptionPlusHlsProxy:
                 user_id=self.user_id,
                 broad_no=self.broad_no,
                 ts_url=self.stream_url,
+                auth_type=self.private_auth_type,
             )
             private_result = _parse_int(private_auth.get("result"))
             if private_result != 1:
@@ -204,14 +210,13 @@ class SubscriptionPlusHlsProxy:
                     "구독플러스 방송 CDN 인증 갱신에 실패했습니다."
                 )
 
-            cookie_names = _cookie_names(client.cookies)
-            missing = sorted(CLOUDFRONT_COOKIE_NAMES - cookie_names)
+            cookies = _cookies_from_private_auth(client, private_auth)
+            missing = sorted(CLOUDFRONT_COOKIE_NAMES - set(cookies))
             if missing:
                 raise SubscriptionPlusResolveError(
                     "구독플러스 방송 CDN 인증 갱신 쿠키가 없습니다: " + ", ".join(missing)
                 )
 
-            cookies = _cookies_to_dict(client.cookies)
             return cookies, _cloudfront_policy_expires_at(cookies)
 
     def _send_response(
@@ -225,7 +230,7 @@ class SubscriptionPlusHlsProxy:
         headers: dict[str, str] = {}
         if is_manifest and response.status_code < 400:
             text = response.text
-            body = self._rewrite_manifest(text).encode("utf-8")
+            body = self._rewrite_manifest(text, base_url=str(response.url)).encode("utf-8")
             headers["Content-Type"] = "application/vnd.apple.mpegurl"
         else:
             for key in ("Content-Type", "Content-Range", "Accept-Ranges"):
@@ -257,11 +262,27 @@ class SubscriptionPlusHlsProxy:
             except OSError:
                 return
 
-    def _rewrite_manifest(self, text: str) -> str:
-        return text.replace(self._origin, "")
+    def _rewrite_manifest(self, text: str, *, base_url: str) -> str:
+        rewritten: list[str] = []
+        for raw_line in text.splitlines(keepends=True):
+            line, newline = _split_line_ending(raw_line)
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                rewritten.append(raw_line.replace(self._origin, ""))
+                continue
+
+            rewritten.append(f"{self._rewrite_manifest_uri(stripped, base_url=base_url)}{newline}")
+        return "".join(rewritten)
+
+    def _rewrite_manifest_uri(self, uri: str, *, base_url: str) -> str:
+        absolute_url = urljoin(base_url, uri)
+        if absolute_url.startswith(self._origin):
+            return absolute_url.replace(self._origin, "", 1)
+        return absolute_url
 
     def _is_manifest_request(self, path: str) -> bool:
-        return path.startswith("/playlist.m3u8")
+        parsed = urlparse(path)
+        return parsed.path == "/playlist.m3u8" or parsed.path.endswith(".m3u8")
 
 
 def _build_hls_proxy_handler(proxy: SubscriptionPlusHlsProxy) -> type[BaseHTTPRequestHandler]:
@@ -343,10 +364,30 @@ async def resolve_subscription_plus_stream(
                 )
 
             if not _is_subscription_plus_channel(channel_info):
-                raise SubscriptionPlusResolveError(
-                    "구독플러스 방송으로 감지됐지만 전용 TS 재생 정보가 없습니다. "
-                    "시청 권한이 있는 cookies.txt 또는 username/password를 확인해주세요."
-                )
+                try:
+                    return await _resolve_subscription_live_hls_stream(
+                        client,
+                        channel_info=channel_info,
+                        user_id=user_id,
+                        broad_no=broad_no,
+                        stream_password=stream_password,
+                        auth_source=auth_source,
+                        browser_headers=headers,
+                    )
+                except SubscriptionPlusResolveError:
+                    if username and password and not login_attempted:
+                        login_attempted = True
+                        login_cookies = await _create_direct_login_cookies(
+                            username=username,
+                            password=password,
+                            headers=headers,
+                            timeout_sec=timeout_sec,
+                        )
+                        if login_cookies:
+                            cookies.update(login_cookies)
+                            auth_source = "username_password"
+                            continue
+                    raise
 
             ts_url = str(channel_info.get("TS") or "").strip()
             if not ts_url:
@@ -376,8 +417,8 @@ async def resolve_subscription_plus_stream(
                         continue
                 raise SubscriptionPlusResolveError("구독플러스 방송 CDN 인증에 실패했습니다.")
 
-            client_cookie_names = _cookie_names(client.cookies)
-            missing = sorted(CLOUDFRONT_COOKIE_NAMES - client_cookie_names)
+            authorized_cookies = _cookies_from_private_auth(client, private_auth)
+            missing = sorted(CLOUDFRONT_COOKIE_NAMES - set(authorized_cookies))
             if missing:
                 raise SubscriptionPlusResolveError(
                     "구독플러스 방송 CDN 인증 쿠키가 없습니다: " + ", ".join(missing)
@@ -385,7 +426,7 @@ async def resolve_subscription_plus_stream(
 
             return SubscriptionPlusStream(
                 url=ts_url,
-                cookies=_cookies_to_dict(client.cookies),
+                cookies=authorized_cookies,
                 browser_headers=headers,
                 metadata={
                     "resolver": "soop_subscription_plus",
@@ -399,6 +440,162 @@ async def resolve_subscription_plus_stream(
             )
 
     raise SubscriptionPlusResolveError("구독플러스 방송 인증 재시도에 실패했습니다.")
+
+
+async def _resolve_subscription_live_hls_stream(
+    client: httpx.AsyncClient,
+    *,
+    channel_info: dict[str, Any],
+    user_id: str,
+    broad_no: int,
+    stream_password: str | None,
+    auth_source: str,
+    browser_headers: dict[str, str],
+) -> SubscriptionPlusStream:
+    aid = await _fetch_channel_aid(
+        client,
+        user_id=user_id,
+        broad_no=broad_no,
+        stream_password=stream_password,
+    )
+    if not aid:
+        raise SubscriptionPlusResolveError(
+            "구독플러스 방송의 PC 웹 HLS AID 재생 정보를 가져오지 못했습니다."
+        )
+
+    assign = await _fetch_subscription_live_assignment(
+        client,
+        broad_no=broad_no,
+        cdn=str(channel_info.get("CDN") or ""),
+    )
+    view_url = str(assign.get("view_url") or "").strip()
+    if not view_url:
+        raise SubscriptionPlusResolveError(
+            "구독플러스 방송의 PC 웹 HLS playlist 정보를 가져오지 못했습니다."
+        )
+
+    stream_url = _append_query_param(view_url, "aid", aid)
+    private_auth = await _authorize_private_stream(
+        client,
+        user_id=user_id,
+        broad_no=broad_no,
+        ts_url=stream_url,
+        auth_type="subs_live",
+    )
+    private_result = _parse_int(private_auth.get("result"))
+    if private_result != 1:
+        raise SubscriptionPlusResolveError("구독플러스 방송 PC 웹 HLS CDN 인증에 실패했습니다.")
+
+    authorized_cookies = _cookies_from_private_auth(client, private_auth)
+    missing = sorted(CLOUDFRONT_COOKIE_NAMES - set(authorized_cookies))
+    if missing:
+        raise SubscriptionPlusResolveError(
+            "구독플러스 방송 PC 웹 HLS CDN 인증 쿠키가 없습니다: " + ", ".join(missing)
+        )
+
+    return SubscriptionPlusStream(
+        url=stream_url,
+        cookies=authorized_cookies,
+        browser_headers=browser_headers,
+        metadata={
+            "resolver": "soop_subscription_plus",
+            "auth_source": auth_source,
+            "hls_mode": "pc_web_subscribe",
+            "private_auth_type": "subs_live",
+            "assign_return_type": _build_subscription_live_return_type(channel_info.get("CDN")),
+            "cdn": channel_info.get("CDN"),
+            "p_min_tier": channel_info.get("P_MIN_TIER"),
+            "tier_type": channel_info.get("TIER_TYPE"),
+            "sub_pay_count": channel_info.get("SUB_PAY_CNT"),
+            "private_auth_result": private_result,
+        },
+        private_auth_type="subs_live",
+    )
+
+
+async def _fetch_channel_aid(
+    client: httpx.AsyncClient,
+    *,
+    user_id: str,
+    broad_no: int,
+    stream_password: str | None,
+) -> str:
+    response = await client.post(
+        CHANNEL_API_URL,
+        params={"bjid": user_id},
+        data={
+            "bid": user_id,
+            "bno": str(broad_no),
+            "type": "aid",
+            "pwd": stream_password or "",
+            "player_type": "html5",
+            "stream_type": "common",
+            "quality": "master",
+            "mode": "landing",
+            "from_api": "0",
+            "is_revive": "false",
+        },
+    )
+    if response.status_code >= 400:
+        raise SubscriptionPlusResolveError(
+            f"SOOP AID 재생 정보 요청에 실패했습니다: HTTP {response.status_code}"
+        )
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise SubscriptionPlusResolveError("SOOP AID 재생 정보 응답이 JSON이 아닙니다.") from exc
+
+    channel_info = data.get("CHANNEL") if isinstance(data, dict) else None
+    if not isinstance(channel_info, dict) or _channel_result(channel_info) != 1:
+        raise SubscriptionPlusResolveError("SOOP AID 재생 정보 확인에 실패했습니다.")
+    return str(channel_info.get("AID") or "").strip()
+
+
+async def _fetch_subscription_live_assignment(
+    client: httpx.AsyncClient,
+    *,
+    broad_no: int,
+    cdn: str,
+) -> dict[str, Any]:
+    response = await client.get(
+        BROAD_STREAM_ASSIGN_URL,
+        params={
+            "return_type": _build_subscription_live_return_type(cdn),
+            "use_cors": "true",
+            "cors_origin_url": "play.sooplive.com",
+            "broad_key": f"{broad_no}-common-master-hls",
+            "player_mode": "landing",
+            "time": "1",
+        },
+    )
+    if response.status_code >= 400:
+        raise SubscriptionPlusResolveError(
+            f"SOOP PC 웹 HLS 할당 요청에 실패했습니다: HTTP {response.status_code}"
+        )
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise SubscriptionPlusResolveError("SOOP PC 웹 HLS 할당 응답이 JSON이 아닙니다.") from exc
+
+    if not isinstance(data, dict) or str(data.get("result") or "") != "1":
+        raise SubscriptionPlusResolveError("SOOP PC 웹 HLS 할당에 실패했습니다.")
+    return data
+
+
+def _build_subscription_live_return_type(cdn: Any) -> str:
+    value = str(cdn or "").strip()
+    if value == "gcp_cdn_subscribe":
+        return value
+    if value.endswith("_cdn"):
+        return f"{value}_pc_web_subscribe"
+    return value or "lg_cdn_pc_web_subscribe"
+
+
+def _append_query_param(url: str, key: str, value: str) -> str:
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}{urlencode({key: value})}"
 
 
 def _build_client_kwargs(
@@ -479,8 +676,24 @@ def _cookies_to_dict(
     }
 
 
-def _cookie_names(cookies: httpx.Cookies) -> set[str]:
-    return {cookie.name for cookie in cookies.jar}
+def _cookies_from_private_auth(
+    client: httpx.AsyncClient | httpx.Client,
+    private_auth: dict[str, Any],
+) -> dict[str, str]:
+    cookies = _cookies_to_dict(client.cookies)
+    data = private_auth.get("data")
+    if isinstance(data, dict):
+        cookies.update(_parse_cookie_header(str(data.get("signed_cookie") or "")))
+    return cookies
+
+
+def _parse_cookie_header(cookie_header: str) -> dict[str, str]:
+    if not cookie_header:
+        return {}
+
+    parsed = SimpleCookie()
+    parsed.load(cookie_header)
+    return {name: morsel.value for name, morsel in parsed.items()}
 
 
 def _exclude_cloudfront_cookies(cookies: dict[str, str]) -> dict[str, str]:
@@ -504,6 +717,14 @@ def _build_record_headers_from_cookie_dict(
         "Referer": _build_subscription_referer(user_id=user_id, broad_no=broad_no),
         "Origin": PLAYBACK_ORIGIN,
     }
+
+
+def _split_line_ending(line: str) -> tuple[str, str]:
+    if line.endswith("\r\n"):
+        return line[:-2], "\r\n"
+    if line.endswith("\n"):
+        return line[:-1], "\n"
+    return line, ""
 
 
 def _url_origin(url: str) -> str:
@@ -631,11 +852,12 @@ async def _authorize_private_stream(
     user_id: str,
     broad_no: int,
     ts_url: str,
+    auth_type: str = "sub_timeshift",
 ) -> dict[str, Any]:
     response = await client.post(
         PRIVATE_AUTH_URL,
         data={
-            "type": "sub_timeshift",
+            "type": auth_type,
             "strm_id": user_id,
             "broad_no": str(broad_no),
             "url": ts_url,
@@ -662,11 +884,12 @@ def _authorize_private_stream_sync(
     user_id: str,
     broad_no: int,
     ts_url: str,
+    auth_type: str = "sub_timeshift",
 ) -> dict[str, Any]:
     response = client.post(
         PRIVATE_AUTH_URL,
         data={
-            "type": "sub_timeshift",
+            "type": auth_type,
             "strm_id": user_id,
             "broad_no": str(broad_no),
             "url": ts_url,

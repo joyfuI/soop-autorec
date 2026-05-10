@@ -20,14 +20,19 @@
 - remux/이동 실패 시 0바이트 초과 tmp 파일이 남아 있으면 `partial`로 기록하고 `temp_path`를 복구 경로로 남긴다.
 - 재생 URL은 `https://play.sooplive.co.kr/{userId}` 고정이다.
 - 구독플러스 감지는 `broad` payload의 `subscriptionOnly > 0`을 힌트로 쓰고, `player_live_api.php` 응답의 `TS_TYPE=2` 및 `TS` URL로 확정한다.
+- `TS_TYPE=2`/`TS`가 없지만 `player_live_api.php` 응답이 권한 있음(`RESULT=1`)인 구독플러스 방송은 PC 웹 HLS 경로로 fallback한다.
+- PC 웹 HLS fallback은 `player_live_api.php type=aid quality=master`로 AID를 받고, `broad_stream_assign.html`에 `broad_key={broadNo}-common-master-hls`를 요청한 뒤 `private_auth.php type=subs_live`로 CDN 쿠키를 받는다.
 - 구독플러스 녹화는 로컬 HLS 프록시가 `private_auth.php`로 받은 `CloudFront-*` 서명 쿠키를 CDN manifest/segment 요청에 붙인다.
+- `private_auth.php`의 CloudFront 서명 쿠키는 Set-Cookie가 아니라 응답 JSON의 `data.signed_cookie`에 담길 수 있다.
+- PC 웹 HLS fallback의 master/media playlist 상대 경로는 로컬 HLS 프록시가 upstream playlist URL 기준으로 재작성한다.
 - 구독플러스 CloudFront 쿠키는 약 90초 수명이므로 로컬 HLS 프록시가 만료 약 25초 전에 `private_auth.php`로 갱신한다.
 - 구독플러스 인증은 `cookies.txt`를 우선 사용하고, 없거나 권한 확인에 실패하면 저장된 `username/password`로 프록시 없이 direct 로그인해 SOOP 쿠키를 만든 뒤 1회 재시도한다.
 - 구독플러스 인증 실패 시 기존 streamlink 경로로 fallback하지 않는다.
 - 구독플러스 referer/origin은 공식 플레이어 흐름에 맞춰 `https://play.sooplive.com/{userId}/{broadNo}` / `https://play.sooplive.com`을 사용한다.
 - 프록시 설정은 환경변수가 아니라 DB(`control_proxy_url`)로만 관리한다.
 - 프록시 URL의 username/password 예약 문자는 저장 시 percent-encoding으로 정규화한다.
-- 프록시는 `streamlink --stream-url` 또는 구독플러스 `player_live_api.php`/`private_auth.php` 해석 및 갱신에만 적용한다. `username/password` 직접 로그인과 CDN manifest/key/segment 요청은 direct다.
+- 프록시는 `streamlink --stream-url` 또는 구독플러스 `player_live_api.php`/`broad_stream_assign.html`/`private_auth.php` 해석 및 갱신에만 적용한다. `username/password` 직접 로그인과 CDN manifest/key/segment 요청은 direct다.
+- PC 웹 HLS fallback에서 프록시를 쓰면 `gcp_cdn_subscribe` 경로가 반환되어 원본 1080 품질이 노출될 수 있다.
 - 수동 중단된 채널이 같은 `broadNo`로 계속 라이브 상태면 자동 녹화를 재시작하지 않고 `online` 상태를 유지한다(재시도/오프라인/새 방송 번호에서 해제).
 - 장시간 작업은 request-context가 아니라 lifespan supervisor에서만 처리한다.
 - SQLite 단일 writer 제약 때문에 Uvicorn worker는 1을 유지한다.
