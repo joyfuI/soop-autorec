@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -43,6 +43,7 @@ class EnsureRecordingResult:
     recording_id: int
     error: str | None = None
     standby_no_stream: bool = False
+    finalizing: bool = False
 
 
 @dataclass
@@ -55,10 +56,11 @@ class RecordingHandle:
     remux_temp_path: Path
     final_path: Path
     process: asyncio.subprocess.Process
-    watch_task: asyncio.Task[None]
+    watch_task: asyncio.Task[None] | None = None
     subscription_proxy: SubscriptionPlusHlsProxy | None = None
     stop_requested: bool = False
     stop_reason: str | None = None
+    capture_done: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class RecorderManager:
@@ -69,11 +71,17 @@ class RecorderManager:
         self.settings = settings
         self._filename_renderer = FilenameRenderer(settings.timezone)
         self._handles: dict[int, RecordingHandle] = {}
+        self._finalize_tasks: set[asyncio.Task[None]] = set()
+        self._finalizing_broadcasts: set[tuple[str, int]] = set()
         self._lock = asyncio.Lock()
 
     @property
     def active_count(self) -> int:
         return len(self._handles)
+
+    @property
+    def finalizing_count(self) -> int:
+        return len(self._finalizing_broadcasts)
 
     async def ensure_recording(
         self,
@@ -84,37 +92,76 @@ class RecorderManager:
     ) -> EnsureRecordingResult:
         channel_id = int(channel["id"])
         broad_no = int(recording["broad_no"])
+        user_id = str(recording.get("user_id") or channel["user_id"])
 
         async with self._lock:
             existing_handle = self._handles.get(channel_id)
+            finalizing_same_broadcast = (
+                user_id,
+                broad_no,
+            ) in self._finalizing_broadcasts
 
-        if (
-            existing_handle is not None
-            and existing_handle.broad_no == broad_no
-            and existing_handle.process.returncode is None
-        ):
+        if existing_handle is not None and existing_handle.broad_no == broad_no:
             recording_model.update_recording_with_probe_payload(
                 self.settings,
                 existing_handle.recording_id,
                 payload,
             )
+            process_active = existing_handle.process.returncode is None
             return EnsureRecordingResult(
-                active=True,
+                active=process_active,
                 started=False,
                 recording_id=existing_handle.recording_id,
+                finalizing=not process_active,
+            )
+
+        if finalizing_same_broadcast:
+            recording_id = int(recording["id"])
+            recording_model.update_recording_with_probe_payload(
+                self.settings,
+                recording_id,
+                payload,
+            )
+            return EnsureRecordingResult(
+                active=False,
+                started=False,
+                recording_id=recording_id,
+                finalizing=True,
             )
 
         if existing_handle is not None and existing_handle.broad_no != broad_no:
             await self.stop_recording(channel_id, reason="new_broadcast_detected")
-            try:
-                await existing_handle.watch_task
-            except Exception:  # pragma: no cover
-                logger.exception(
-                    "Previous recording cleanup failed for channel_id=%s",
-                    channel_id,
-                )
+            await existing_handle.capture_done.wait()
+            watch_task = existing_handle.watch_task
+            if watch_task is not None and watch_task.done():
+                try:
+                    watch_task.result()
+                except Exception:  # pragma: no cover
+                    logger.exception(
+                        "Previous recording capture cleanup failed for channel_id=%s",
+                        channel_id,
+                    )
 
         return await self._start_recording(channel=channel, recording=recording, payload=payload)
+
+    async def _wait_for_finalize_tasks(self) -> None:
+        while True:
+            async with self._lock:
+                tasks = [task for task in self._finalize_tasks if not task.done()]
+
+            if not tasks:
+                return
+
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _mark_capture_done(self, handle: RecordingHandle) -> None:
+        async with self._lock:
+            current = self._handles.get(handle.channel_id)
+            if current is handle:
+                self._handles.pop(handle.channel_id, None)
+            self._finalizing_broadcasts.add((handle.user_id, handle.broad_no))
+
+        handle.capture_done.set()
 
     async def stop_recording(self, channel_id: int, *, reason: str) -> bool:
         async with self._lock:
@@ -158,8 +205,7 @@ class RecorderManager:
         for handle in handles:
             await self.stop_recording(handle.channel_id, reason=reason)
 
-        if handles:
-            await asyncio.gather(*(handle.watch_task for handle in handles), return_exceptions=True)
+        await self._wait_for_finalize_tasks()
 
     async def _start_recording(
         self,
@@ -451,10 +497,6 @@ class RecorderManager:
             },
         )
 
-        watch_task = asyncio.create_task(
-            self._watch_process(channel_id),
-            name=f"watch-recording-{channel_id}",
-        )
         handle = RecordingHandle(
             channel_id=channel_id,
             recording_id=recording_id,
@@ -464,12 +506,18 @@ class RecorderManager:
             remux_temp_path=remux_temp_path,
             final_path=final_path,
             process=process,
-            watch_task=watch_task,
             subscription_proxy=subscription_proxy,
         )
 
         async with self._lock:
             self._handles[channel_id] = handle
+            watch_task = asyncio.create_task(
+                self._watch_process(handle),
+                name=f"watch-recording-{channel_id}",
+            )
+            handle.watch_task = watch_task
+            self._finalize_tasks.add(watch_task)
+            watch_task.add_done_callback(self._finalize_tasks.discard)
 
         return EnsureRecordingResult(
             active=True,
@@ -477,119 +525,124 @@ class RecorderManager:
             recording_id=recording_id,
         )
 
-    async def _watch_process(self, channel_id: int) -> None:
-        async with self._lock:
-            handle = self._handles.get(channel_id)
-
-        if handle is None:
-            return
-
+    async def _watch_process(self, handle: RecordingHandle) -> None:
+        channel_id = handle.channel_id
         stderr_text = ""
-        if handle.process.stderr is not None:
-            _, stderr_bytes = await handle.process.communicate()
-            stderr_text = stderr_bytes.decode("utf-8", errors="ignore")
-        else:
-            await handle.process.wait()
+        try:
+            if handle.process.stderr is not None:
+                _, stderr_bytes = await handle.process.communicate()
+                stderr_text = stderr_bytes.decode("utf-8", errors="ignore")
+            else:
+                await handle.process.wait()
 
-        if handle.subscription_proxy is not None:
-            handle.subscription_proxy.stop()
+            if handle.subscription_proxy is not None:
+                handle.subscription_proxy.stop()
 
-        exit_code = handle.process.returncode
-        stopped_at = now_utc().isoformat()
-        stderr_tail = self._tail_text(stderr_text)
+            exit_code = handle.process.returncode
+            stopped_at = now_utc().isoformat()
+            stderr_tail = self._tail_text(stderr_text)
 
-        recording_model.update_recording_fields(
-            self.settings,
-            handle.recording_id,
-            recording_stopped_at=stopped_at,
-        )
-
-        remux_result, resolved_final_path = await self._run_remux(
-            recording_id=handle.recording_id,
-            temp_path=handle.temp_path,
-            remux_temp_path=handle.remux_temp_path,
-            final_path=handle.final_path,
-            stop_requested=handle.stop_requested,
-            stop_reason=handle.stop_reason,
-            recorder_exit_code=exit_code,
-            recorder_stderr=stderr_tail,
-        )
-
-        if remux_result:
-            requested_final_path = handle.final_path
-            handle.final_path = resolved_final_path
-            completed_filename = handle.final_path.name
-            payload: dict[str, Any] = {"final_path": str(handle.final_path)}
-            if handle.final_path != requested_final_path:
-                payload["requested_final_path"] = str(requested_final_path)
-                payload["renamed_due_to_collision"] = True
-            event_log_model.add_event_log(
-                self.settings,
-                level="info",
-                event_type="record_complete",
-                channel_id=handle.channel_id,
-                recording_id=handle.recording_id,
-                message=f"녹화 및 remux가 완료되었습니다. 파일명: {completed_filename}",
-                payload=payload,
-            )
-        else:
-            error_message = "녹화가 실패 상태로 종료되었습니다."
-            recovery_path: str | None = None
-            latest_status = "failed"
-            latest_recording = recording_model.get_recording_by_id(
+            recording_model.update_recording_fields(
                 self.settings,
                 handle.recording_id,
+                recording_stopped_at=stopped_at,
             )
-            if latest_recording is not None:
-                latest_error = str(latest_recording.get("error_message") or "").strip()
-                if latest_error:
-                    error_message = latest_error
-                latest_status = str(latest_recording.get("status") or "failed")
-                recovery_path_raw = latest_recording.get("temp_path")
-                if recovery_path_raw is not None:
-                    recovery_path = str(recovery_path_raw).strip() or None
 
-            payload: dict[str, Any] = {"exit_code": exit_code, "stderr_tail": stderr_tail}
-            if recovery_path:
-                payload["recovery_path"] = recovery_path
-            if latest_recording is not None:
-                final_path_value = str(latest_recording.get("final_path") or "").strip()
-                if final_path_value:
-                    payload["final_path"] = final_path_value
+            await self._mark_capture_done(handle)
 
-            if latest_status == "partial":
-                partial_message = "녹화가 partial 상태로 종료되었습니다."
-                if recovery_path:
-                    partial_message = f"{partial_message} 복구 파일: {recovery_path}"
+            remux_result, resolved_final_path = await self._run_remux(
+                recording_id=handle.recording_id,
+                temp_path=handle.temp_path,
+                remux_temp_path=handle.remux_temp_path,
+                final_path=handle.final_path,
+                stop_requested=handle.stop_requested,
+                stop_reason=handle.stop_reason,
+                recorder_exit_code=exit_code,
+                recorder_stderr=stderr_tail,
+            )
+
+            if remux_result:
+                requested_final_path = handle.final_path
+                handle.final_path = resolved_final_path
+                completed_filename = handle.final_path.name
+                payload: dict[str, Any] = {"final_path": str(handle.final_path)}
+                if handle.final_path != requested_final_path:
+                    payload["requested_final_path"] = str(requested_final_path)
+                    payload["renamed_due_to_collision"] = True
                 event_log_model.add_event_log(
                     self.settings,
-                    level="warning",
-                    event_type="record_partial",
+                    level="info",
+                    event_type="record_complete",
                     channel_id=handle.channel_id,
                     recording_id=handle.recording_id,
-                    message=partial_message,
+                    message=f"녹화 및 remux가 완료되었습니다. 파일명: {completed_filename}",
                     payload=payload,
                 )
             else:
-                event_log_model.add_event_log(
+                error_message = "녹화가 실패 상태로 종료되었습니다."
+                recovery_path: str | None = None
+                latest_status = "failed"
+                latest_recording = recording_model.get_recording_by_id(
                     self.settings,
-                    level="error",
-                    event_type="record_failed",
-                    channel_id=handle.channel_id,
-                    recording_id=handle.recording_id,
-                    message="녹화가 실패 상태로 종료되었습니다.",
-                    payload=payload,
+                    handle.recording_id,
                 )
-            channel_model.update_last_error(
-                self.settings,
-                handle.channel_id,
-                last_error=error_message,
-            )
+                if latest_recording is not None:
+                    latest_error = str(latest_recording.get("error_message") or "").strip()
+                    if latest_error:
+                        error_message = latest_error
+                    latest_status = str(latest_recording.get("status") or "failed")
+                    recovery_path_raw = latest_recording.get("temp_path")
+                    if recovery_path_raw is not None:
+                        recovery_path = str(recovery_path_raw).strip() or None
 
-        async with self._lock:
-            current = self._handles.get(channel_id)
-            if current is handle:
-                self._handles.pop(channel_id, None)
+                payload: dict[str, Any] = {"exit_code": exit_code, "stderr_tail": stderr_tail}
+                if recovery_path:
+                    payload["recovery_path"] = recovery_path
+                if latest_recording is not None:
+                    final_path_value = str(latest_recording.get("final_path") or "").strip()
+                    if final_path_value:
+                        payload["final_path"] = final_path_value
+
+                if latest_status == "partial":
+                    partial_message = "녹화가 partial 상태로 종료되었습니다."
+                    if recovery_path:
+                        partial_message = f"{partial_message} 복구 파일: {recovery_path}"
+                    event_log_model.add_event_log(
+                        self.settings,
+                        level="warning",
+                        event_type="record_partial",
+                        channel_id=handle.channel_id,
+                        recording_id=handle.recording_id,
+                        message=partial_message,
+                        payload=payload,
+                    )
+                else:
+                    event_log_model.add_event_log(
+                        self.settings,
+                        level="error",
+                        event_type="record_failed",
+                        channel_id=handle.channel_id,
+                        recording_id=handle.recording_id,
+                        message="녹화가 실패 상태로 종료되었습니다.",
+                        payload=payload,
+                    )
+                channel_model.update_last_error(
+                    self.settings,
+                    handle.channel_id,
+                    last_error=error_message,
+                )
+        except Exception:
+            logger.exception(
+                "Recording finalization failed for channel_id=%s recording_id=%s",
+                channel_id,
+                handle.recording_id,
+            )
+            raise
+        finally:
+            if not handle.capture_done.is_set():
+                await self._mark_capture_done(handle)
+            async with self._lock:
+                self._finalizing_broadcasts.discard((handle.user_id, handle.broad_no))
 
     async def _run_remux(
         self,

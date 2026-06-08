@@ -432,7 +432,9 @@ async def restart_system(
 ) -> RedirectResponse:
     target_path = _resolve_return_path(return_to)
     tab_key = _resolve_channel_tab(tab)
-    active_recorder_count = request.app.state.supervisor.recorder.active_count
+    recorder = request.app.state.supervisor.recorder
+    active_recorder_count = recorder.active_count
+    finalizing_recorder_count = recorder.finalizing_count
     force_restart = force == "1"
 
     if active_recorder_count > 0 and not force_restart:
@@ -455,6 +457,21 @@ async def restart_system(
             target_path,
             message=(
                 f"녹화 중 {active_recorder_count}개 채널을 중단하고 재시작합니다. "
+                "잠시 후 다시 접속해주세요."
+            ),
+            tab=tab_key,
+        )
+
+    if finalizing_recorder_count > 0:
+        background_tasks.add_task(
+            _shutdown_supervisor_and_exit,
+            request.app.state.supervisor,
+            recorder_stop_reason="app_shutdown",
+        )
+        return _build_redirect(
+            target_path,
+            message=(
+                f"remux 중인 녹화 {finalizing_recorder_count}건을 마무리한 뒤 재시작합니다. "
                 "잠시 후 다시 접속해주세요."
             ),
             tab=tab_key,

@@ -269,9 +269,12 @@ class Supervisor:
             hold_status = "online"
             if active_recording is not None:
                 active_status = str(active_recording.get("status") or "")
-                hold_status = (
-                    "stopping" if active_status in {"stopping", "remuxing"} else "recording"
-                )
+                if active_status == "remuxing":
+                    hold_status = "remuxing"
+                elif active_status == "stopping":
+                    hold_status = "stopping"
+                else:
+                    hold_status = "recording"
             channel_model.update_probe_state(
                 self.settings,
                 channel_id,
@@ -290,9 +293,12 @@ class Supervisor:
             next_status = "online"
             if active_recording is not None:
                 active_status = str(active_recording.get("status") or "")
-                next_status = (
-                    "stopping" if active_status in {"stopping", "remuxing"} else "recording"
-                )
+                if active_status == "remuxing":
+                    next_status = "remuxing"
+                elif active_status == "stopping":
+                    next_status = "stopping"
+                else:
+                    next_status = "recording"
             channel_model.update_probe_state(
                 self.settings,
                 channel_id,
@@ -327,9 +333,12 @@ class Supervisor:
 
         prior_status = str(channel.get("last_status") or "")
         prior_broad_no = self._parse_optional_int(channel.get("last_broad_no"))
-        next_status = "standby_no_stream" if ensure_result.standby_no_stream else (
-            "recording" if ensure_result.active else "error"
-        )
+        if ensure_result.finalizing:
+            next_status = "remuxing"
+        elif ensure_result.standby_no_stream:
+            next_status = "standby_no_stream"
+        else:
+            next_status = "recording" if ensure_result.active else "error"
 
         if created and ensure_result.active:
             event_log_model.add_event_log(
@@ -433,7 +442,13 @@ class Supervisor:
             channel_id,
         )
 
-        if active_recording is not None and offline_streak >= self.settings.offline_confirm_count:
+        active_status = ""
+        if active_recording is not None:
+            active_status = str(active_recording.get("status") or "")
+
+        if active_status == "remuxing":
+            status = "remuxing"
+        elif active_recording is not None and offline_streak >= self.settings.offline_confirm_count:
             await self.recorder.stop_recording(channel_id, reason="offline_confirmed")
             status = "stopping"
         elif active_recording is not None:
@@ -458,7 +473,11 @@ class Supervisor:
             self.settings,
             channel_id,
         )
-        next_status = "recording" if active_recording is not None else "error"
+        if active_recording is not None:
+            active_status = str(active_recording.get("status") or "")
+            next_status = "remuxing" if active_status == "remuxing" else "recording"
+        else:
+            next_status = "error"
 
         channel_model.update_probe_state(
             self.settings,
