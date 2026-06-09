@@ -53,7 +53,7 @@ class SubscriptionPlusStream:
 def has_subscription_plus_hint(payload: dict[str, Any]) -> bool:
     try:
         return int(payload.get("subscriptionOnly") or 0) > 0
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return False
 
 
@@ -293,7 +293,7 @@ def _build_hls_proxy_handler(proxy: SubscriptionPlusHlsProxy) -> type[BaseHTTPRe
         def do_HEAD(self) -> None:
             proxy.handle_request(self)
 
-        def log_message(self, fmt: str, *args: Any) -> None:
+        def log_message(self, _format: str, *_args: Any) -> None:
             return
 
     return SubscriptionPlusHlsProxyHandler
@@ -311,7 +311,7 @@ async def resolve_subscription_plus_stream(
     proxy_url: str | None,
     timeout_sec: float = 20.0,
 ) -> SubscriptionPlusStream | None:
-    cookies = _load_cookie_file(cookies_txt_path)
+    cookies = load_soop_cookie_file(cookies_txt_path)
     headers = _build_browser_headers(user_id=user_id, broad_no=broad_no)
     auth_source = "cookies_txt" if cookies else "none"
     login_attempted = False
@@ -635,6 +635,27 @@ async def _create_direct_login_cookies(
         return _cookies_to_dict(client.cookies)
 
 
+async def create_direct_soop_login_cookies(
+    *,
+    username: str | None,
+    password: str | None,
+    user_id: str,
+    broad_no: int,
+    timeout_sec: float = 20.0,
+) -> dict[str, str]:
+    username_value = str(username or "").strip()
+    password_value = str(password or "")
+    if not username_value or not password_value:
+        return {}
+
+    return await _create_direct_login_cookies(
+        username=username_value,
+        password=password_value,
+        headers=_build_browser_headers(user_id=user_id, broad_no=broad_no),
+        timeout_sec=timeout_sec,
+    )
+
+
 def _build_channel_info_error(
     channel_info: dict[str, Any],
     *,
@@ -756,7 +777,7 @@ def _cloudfront_policy_expires_at(cookies: dict[str, str]) -> int | None:
         return None
 
 
-def _load_cookie_file(cookies_txt_path: str | None) -> dict[str, str]:
+def load_soop_cookie_file(cookies_txt_path: str | None) -> dict[str, str]:
     path_raw = (cookies_txt_path or "").strip()
     if not path_raw:
         return {}

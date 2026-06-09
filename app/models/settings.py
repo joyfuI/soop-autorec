@@ -156,11 +156,6 @@ def normalize_proxy_url(value: str) -> str:
     )
 
 
-def _validate_proxy_url(value: str) -> None:
-    parsed = urlsplit(value)
-    _validate_proxy_url_parts(parsed)
-
-
 def _validate_proxy_url_parts(parsed) -> None:
     if parsed.scheme.lower() not in {"http", "https", "socks5", "socks5h"}:
         raise ValueError("proxy_url 스킴은 http, https, socks5, socks5h 중 하나여야 합니다.")

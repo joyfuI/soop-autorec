@@ -33,12 +33,9 @@ def _row_to_channel_dict(row: Any) -> dict[str, Any]:
     }
 
 
-def list_channels(settings: Settings, *, enabled_only: bool = False) -> list[dict[str, Any]]:
-    where_clause = "WHERE enabled = 1" if enabled_only else ""
-    query = f"SELECT {CHANNEL_COLUMNS} FROM channels {where_clause} ORDER BY id ASC"
-
+def list_channels(settings: Settings) -> list[dict[str, Any]]:
     with connect(settings) as conn:
-        rows = conn.execute(query).fetchall()
+        rows = conn.execute(f"SELECT {CHANNEL_COLUMNS} FROM channels ORDER BY id ASC").fetchall()
 
     return [_row_to_channel_dict(row) for row in rows]
 

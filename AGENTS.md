@@ -34,6 +34,7 @@
 - 프록시 설정은 환경변수가 아니라 DB(`control_proxy_url`)로만 관리한다.
 - 프록시 URL의 username/password 예약 문자는 저장 시 percent-encoding으로 정규화한다.
 - 프록시는 `streamlink --stream-url` 또는 구독플러스 `player_live_api.php`/`broad_stream_assign.html`/`private_auth.php` 해석 및 갱신에만 적용한다. `username/password` 직접 로그인과 CDN manifest/key/segment 요청은 direct다.
+- 일반 방송에서 프록시를 쓰고 `username/password`가 저장돼 있으면 direct 로그인으로 만든 SOOP 쿠키를 `streamlink --http-cookie`에 주입하고, streamlink 자체 로그인 옵션은 넘기지 않는다.
 - PC 웹 HLS fallback에서 프록시를 쓰면 `gcp_cdn_subscribe` 경로가 반환되어 원본 1080 품질이 노출될 수 있다.
 - 수동 중단된 채널이 같은 `broadNo`로 계속 라이브 상태면 자동 녹화를 재시작하지 않고 `online` 상태를 유지한다(재시도/오프라인/새 방송 번호에서 해제).
 - 장시간 작업은 request-context가 아니라 lifespan supervisor에서만 처리한다.

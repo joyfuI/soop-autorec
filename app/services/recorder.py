@@ -20,7 +20,9 @@ from app.services.playback_url import build_playback_url
 from app.services.soop_subscription import (
     SubscriptionPlusHlsProxy,
     SubscriptionPlusResolveError,
+    create_direct_soop_login_cookies,
     has_subscription_plus_hint,
+    load_soop_cookie_file,
     resolve_subscription_plus_stream,
 )
 from app.utils.sanitize import sanitize_filename_component
@@ -325,7 +327,14 @@ class RecorderManager:
                     "local_hls_proxy": True,
                 }
             else:
-                auth_args = self._build_auth_args(channel)
+                auth_args, auth_metadata = await self._build_auth_args(
+                    channel,
+                    auth=auth,
+                    user_id=user_id,
+                    broad_no=broad_no,
+                    proxy_url=resolver_proxy_url,
+                )
+                resolver_metadata.update(auth_metadata)
                 resolve_cmd = self._build_resolve_stream_url_cmd(
                     playback_url=playback_url,
                     quality=quality,
@@ -969,63 +978,66 @@ class RecorderManager:
             str(temp_path),
         ]
 
-    def _build_auth_args(self, channel: dict[str, Any]) -> list[str]:
+    async def _build_auth_args(
+        self,
+        channel: dict[str, Any],
+        *,
+        auth: dict[str, str | None],
+        user_id: str,
+        broad_no: int,
+        proxy_url: str | None,
+    ) -> tuple[list[str], dict[str, Any]]:
         args: list[str] = []
-        auth = settings_model.get_auth_credentials(self.settings)
+        metadata: dict[str, Any] = {}
+        auth_sources: list[str] = []
 
         username = str(auth.get("username") or "").strip()
         password = str(auth.get("password") or "")
+        cookies_txt_path = str(auth.get("cookies_txt_path") or "").strip()
+        if cookies_txt_path:
+            cookie_args = self._build_http_cookie_args(load_soop_cookie_file(cookies_txt_path))
+            if cookie_args:
+                args.extend(cookie_args)
+                auth_sources.append("cookies_txt")
+
         if username and password:
-            args.extend(["--soop-username", username, "--soop-password", password])
+            if proxy_url:
+                login_cookies = await create_direct_soop_login_cookies(
+                    username=username,
+                    password=password,
+                    user_id=user_id,
+                    broad_no=broad_no,
+                )
+                if login_cookies:
+                    args.extend(self._build_http_cookie_args(login_cookies))
+                    auth_sources.append("direct_login_cookies")
+                    metadata["direct_login_cookie_count"] = len(login_cookies)
+                else:
+                    logger.warning(
+                        "SOOP direct login did not produce cookies for %s/%s",
+                        user_id,
+                        broad_no,
+                    )
+            else:
+                args.extend(["--soop-username", username, "--soop-password", password])
+                auth_sources.append("streamlink_username_password")
 
         stream_password = str(channel.get("stream_password") or "").strip()
         if stream_password:
             args.extend(["--soop-stream-password", stream_password])
 
-        cookies_txt_path = str(auth.get("cookies_txt_path") or "").strip()
-        if cookies_txt_path:
-            args.extend(self._build_cookie_args(cookies_txt_path))
+        if auth_sources:
+            metadata["auth_sources"] = auth_sources
 
-        return args
+        return args, metadata
 
-    def _build_cookie_args(self, cookies_txt_path: str) -> list[str]:
-        path = Path(cookies_txt_path)
-        if not path.exists():
-            return []
-
-        cookies: list[str] = []
-        try:
-            content = path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            return []
-
-        for raw_line in content.splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-
-            name = ""
-            value = ""
-
-            if "\t" in line:
-                parts = line.split("\t")
-                if len(parts) >= 7:
-                    name = parts[5].strip()
-                    value = parts[6].strip()
-            elif "=" in line:
-                name, value = line.split("=", 1)
-                name = name.strip()
-                value = value.strip()
-
-            if name:
-                cookies.append(f"{name}={value}")
-
-            if len(cookies) >= 200:
-                break
-
+    def _build_http_cookie_args(self, cookies: dict[str, str]) -> list[str]:
         args: list[str] = []
-        for cookie in cookies:
-            args.extend(["--http-cookie", cookie])
+        for index, (name, value) in enumerate(cookies.items()):
+            if index >= 200:
+                break
+            if name:
+                args.extend(["--http-cookie", f"{name}={value}"])
 
         return args
 
