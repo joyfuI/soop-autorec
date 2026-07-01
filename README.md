@@ -11,6 +11,7 @@ SOOP 채널 라이브를 자동 감지해 `ffmpeg`로 녹화/정리(remux)하는
 - 채널/인증/프록시 탭형 관리 UI (`/channels`)
 - SOOP 방송 상태 폴링 기반 자동 녹화
 - 녹화 종료 후 tmp에서 `ffmpeg -c copy` remux 후 recordings로 이동
+- 같은 방송 번호가 remux 중 다시 라이브로 감지되면 새 녹화 세션 시작
 - 녹화 이력/이벤트 로그 조회 API
 - 이벤트 로그 JSONL 파일 저장 (`./data/logs/events.jsonl`)
 - 웹 UI 상태/이벤트 실시간 갱신 (SSE 기반)

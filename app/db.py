@@ -45,11 +45,12 @@ CREATE TABLE IF NOT EXISTS recordings (
   error_message TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE,
-  UNIQUE(user_id, broad_no)
+  FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_recordings_channel_status ON recordings(channel_id, status);
+CREATE INDEX IF NOT EXISTS idx_recordings_user_broad_status
+ON recordings(user_id, broad_no, status);
 """
 
 
@@ -72,6 +73,7 @@ def initialize_database(settings: Settings) -> None:
 def _migrate_schema(conn: sqlite3.Connection) -> None:
     conn.execute("DROP INDEX IF EXISTS idx_recordings_stopped_at;")
     _migrate_settings_table(conn)
+    _migrate_recordings_table(conn)
 
 
 def _migrate_settings_table(conn: sqlite3.Connection) -> None:
@@ -102,6 +104,69 @@ def _migrate_settings_table(conn: sqlite3.Connection) -> None:
         )
 
     conn.execute("DROP TABLE settings_old")
+
+
+def _migrate_recordings_table(conn: sqlite3.Connection) -> None:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'recordings'"
+    ).fetchone()
+    table_sql = str(row[0] or "") if row is not None else ""
+    normalized_sql = "".join(table_sql.lower().split())
+    if "unique(user_id,broad_no)" not in normalized_sql:
+        return
+
+    conn.execute("DROP INDEX IF EXISTS idx_recordings_channel_status;")
+    conn.execute("DROP INDEX IF EXISTS idx_recordings_user_broad_status;")
+    conn.execute("ALTER TABLE recordings RENAME TO recordings_old")
+    conn.execute(
+        """
+        CREATE TABLE recordings (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          channel_id INTEGER NOT NULL,
+          user_id TEXT NOT NULL,
+          broad_no INTEGER NOT NULL,
+          broad_title TEXT NOT NULL DEFAULT '',
+          broad_start_at TEXT,
+          status TEXT NOT NULL,
+          detected_at TEXT NOT NULL,
+          recording_started_at TEXT,
+          recording_stopped_at TEXT,
+          final_path TEXT,
+          temp_path TEXT,
+          file_size_bytes INTEGER,
+          ffmpeg_exit_code INTEGER,
+          error_message TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO recordings (
+          id, channel_id, user_id, broad_no, broad_title, broad_start_at,
+          status, detected_at, recording_started_at, recording_stopped_at,
+          final_path, temp_path, file_size_bytes, ffmpeg_exit_code,
+          error_message, created_at, updated_at
+        )
+        SELECT
+          id, channel_id, user_id, broad_no, broad_title, broad_start_at,
+          status, detected_at, recording_started_at, recording_stopped_at,
+          final_path, temp_path, file_size_bytes, ffmpeg_exit_code,
+          error_message, created_at, updated_at
+        FROM recordings_old
+        """
+    )
+    conn.execute("DROP TABLE recordings_old")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_recordings_channel_status "
+        "ON recordings(channel_id, status);"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_recordings_user_broad_status "
+        "ON recordings(user_id, broad_no, status);"
+    )
 
 
 @contextmanager

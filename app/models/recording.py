@@ -8,6 +8,12 @@ from app.db import connect
 from app.utils.time import now_utc
 
 ACTIVE_RECORDING_STATUSES = ("starting", "recording", "stopping", "remuxing")
+REUSABLE_LIVE_RECORDING_STATUSES = (
+    "starting",
+    "recording",
+    "stopping",
+    "standby_no_stream",
+)
 
 RECORDING_COLUMNS = (
     "id, channel_id, user_id, broad_no, broad_title, broad_start_at, status, "
@@ -66,15 +72,18 @@ def get_active_recording_for_channel(settings: Settings, channel_id: int) -> dic
     return _row_to_recording_dict(row)
 
 
-def get_recording_by_user_and_broad(
+def get_reusable_recording_for_live(
     settings: Settings,
     user_id: str,
     broad_no: int,
 ) -> dict[str, Any] | None:
+    placeholders = ", ".join(["?" for _ in REUSABLE_LIVE_RECORDING_STATUSES])
     with connect(settings) as conn:
         row = conn.execute(
-            f"SELECT {RECORDING_COLUMNS} FROM recordings WHERE user_id = ? AND broad_no = ?",
-            (user_id, broad_no),
+            f"SELECT {RECORDING_COLUMNS} FROM recordings "
+            f"WHERE user_id = ? AND broad_no = ? AND status IN ({placeholders}) "
+            "ORDER BY id DESC LIMIT 1",
+            (user_id, broad_no, *REUSABLE_LIVE_RECORDING_STATUSES),
         ).fetchone()
 
     if row is None:
@@ -102,7 +111,7 @@ def create_or_get_recording_for_live(
     broad_no: int,
     payload: dict[str, Any],
 ) -> tuple[dict[str, Any], bool]:
-    existing = get_recording_by_user_and_broad(settings, user_id, broad_no)
+    existing = get_reusable_recording_for_live(settings, user_id, broad_no)
     if existing is not None:
         return existing, False
 

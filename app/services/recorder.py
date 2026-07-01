@@ -74,7 +74,7 @@ class RecorderManager:
         self._filename_renderer = FilenameRenderer(settings.timezone)
         self._handles: dict[int, RecordingHandle] = {}
         self._finalize_tasks: set[asyncio.Task[None]] = set()
-        self._finalizing_broadcasts: set[tuple[str, int]] = set()
+        self._finalizing_recording_ids: set[int] = set()
         self._lock = asyncio.Lock()
 
     @property
@@ -83,7 +83,7 @@ class RecorderManager:
 
     @property
     def finalizing_count(self) -> int:
-        return len(self._finalizing_broadcasts)
+        return len(self._finalizing_recording_ids)
 
     async def ensure_recording(
         self,
@@ -93,15 +93,12 @@ class RecorderManager:
         payload: dict[str, Any],
     ) -> EnsureRecordingResult:
         channel_id = int(channel["id"])
+        recording_id = int(recording["id"])
         broad_no = int(recording["broad_no"])
-        user_id = str(recording.get("user_id") or channel["user_id"])
 
         async with self._lock:
             existing_handle = self._handles.get(channel_id)
-            finalizing_same_broadcast = (
-                user_id,
-                broad_no,
-            ) in self._finalizing_broadcasts
+            finalizing_same_recording = recording_id in self._finalizing_recording_ids
 
         if existing_handle is not None and existing_handle.broad_no == broad_no:
             recording_model.update_recording_with_probe_payload(
@@ -117,8 +114,7 @@ class RecorderManager:
                 finalizing=not process_active,
             )
 
-        if finalizing_same_broadcast:
-            recording_id = int(recording["id"])
+        if finalizing_same_recording:
             recording_model.update_recording_with_probe_payload(
                 self.settings,
                 recording_id,
@@ -161,7 +157,7 @@ class RecorderManager:
             current = self._handles.get(handle.channel_id)
             if current is handle:
                 self._handles.pop(handle.channel_id, None)
-            self._finalizing_broadcasts.add((handle.user_id, handle.broad_no))
+            self._finalizing_recording_ids.add(handle.recording_id)
 
         handle.capture_done.set()
 
@@ -287,10 +283,15 @@ class RecorderManager:
 
         temp_root = Path(self.settings.temp_root_dir)
         temp_root.mkdir(parents=True, exist_ok=True)
-        temp_path = temp_root / self._build_temp_filename(user_id=user_id, broad_no=broad_no)
+        temp_path = temp_root / self._build_temp_filename(
+            user_id=user_id,
+            broad_no=broad_no,
+            recording_id=recording_id,
+        )
         remux_temp_path = temp_root / self._build_remux_temp_filename(
             user_id=user_id,
             broad_no=broad_no,
+            recording_id=recording_id,
         )
 
         quality = str(channel.get("preferred_quality") or "best")
@@ -554,7 +555,9 @@ class RecorderManager:
             recording_model.update_recording_fields(
                 self.settings,
                 handle.recording_id,
+                status="remuxing",
                 recording_stopped_at=stopped_at,
+                error_message=None,
             )
 
             await self._mark_capture_done(handle)
@@ -651,7 +654,7 @@ class RecorderManager:
             if not handle.capture_done.is_set():
                 await self._mark_capture_done(handle)
             async with self._lock:
-                self._finalizing_broadcasts.discard((handle.user_id, handle.broad_no))
+                self._finalizing_recording_ids.discard(handle.recording_id)
 
     async def _run_remux(
         self,
@@ -904,15 +907,27 @@ class RecorderManager:
 
         return relative_path
 
-    def _build_temp_filename(self, *, user_id: str, broad_no: int) -> str:
+    def _build_temp_filename(
+        self,
+        *,
+        user_id: str,
+        broad_no: int,
+        recording_id: int,
+    ) -> str:
         user = sanitize_filename_component(user_id, fallback="unknown")
         stamp = now_utc().strftime("%Y%m%d_%H%M%S")
-        return f"{user}_{broad_no}_{stamp}.mkv"
+        return f"{user}_{broad_no}_{recording_id}_{stamp}.mkv"
 
-    def _build_remux_temp_filename(self, *, user_id: str, broad_no: int) -> str:
+    def _build_remux_temp_filename(
+        self,
+        *,
+        user_id: str,
+        broad_no: int,
+        recording_id: int,
+    ) -> str:
         user = sanitize_filename_component(user_id, fallback="unknown")
         stamp = now_utc().strftime("%Y%m%d_%H%M%S")
-        return f"{user}_{broad_no}_{stamp}.mp4"
+        return f"{user}_{broad_no}_{recording_id}_{stamp}.mp4"
 
     def _build_resolve_stream_url_cmd(
         self,
