@@ -83,6 +83,7 @@
 - `COOKIES_DIR=./data/cookies`
 - `STREAMLINK_BINARY=streamlink`
 - 폴링 간격은 채널별 필드 없이 전역 `POLL_INTERVAL_SEC`만 사용한다.
+- 오프라인 확정 횟수는 전역 `OFFLINE_CONFIRM_COUNT`를 사용하며 기본값은 6이다.
 
 ## DB 마이그레이션 메모
 
