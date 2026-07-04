@@ -194,3 +194,36 @@ def update_last_error(
         )
         conn.commit()
 
+
+def mark_recording_error_if_current_broadcast(
+    settings: Settings,
+    channel_id: int,
+    *,
+    broad_no: int,
+    last_error: str,
+) -> bool:
+    timestamp = now_utc().isoformat()
+    with connect(settings) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE channels
+            SET
+              last_status = 'error',
+              last_error = ?,
+              updated_at = ?
+            WHERE id = ?
+              AND last_broad_no = ?
+              AND last_status IN (
+                'recording',
+                'stopping',
+                'remuxing',
+                'standby_no_stream',
+                'error'
+              )
+            """,
+            (last_error, timestamp, channel_id, broad_no),
+        )
+        conn.commit()
+
+    return cursor.rowcount > 0
+

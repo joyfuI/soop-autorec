@@ -161,6 +161,24 @@ class RecorderManager:
 
         handle.capture_done.set()
 
+    async def _mark_channel_error_if_no_newer_recording(
+        self,
+        handle: RecordingHandle,
+        *,
+        error_message: str,
+    ) -> None:
+        async with self._lock:
+            current = self._handles.get(handle.channel_id)
+            if current is not None and current is not handle:
+                return
+
+            channel_model.mark_recording_error_if_current_broadcast(
+                self.settings,
+                handle.channel_id,
+                broad_no=handle.broad_no,
+                last_error=error_message,
+            )
+
     async def stop_recording(self, channel_id: int, *, reason: str) -> bool:
         async with self._lock:
             handle = self._handles.get(channel_id)
@@ -638,10 +656,9 @@ class RecorderManager:
                         message="녹화가 실패 상태로 종료되었습니다.",
                         payload=payload,
                     )
-                channel_model.update_last_error(
-                    self.settings,
-                    handle.channel_id,
-                    last_error=error_message,
+                await self._mark_channel_error_if_no_newer_recording(
+                    handle,
+                    error_message=error_message,
                 )
         except Exception:
             logger.exception(
