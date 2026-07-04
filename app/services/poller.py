@@ -18,6 +18,7 @@ from app.utils.time import now_utc
 logger = logging.getLogger(__name__)
 MAINTENANCE_INTERVAL = timedelta(hours=1)
 RECORDINGS_RETENTION_DAYS = 90
+MAX_CONCURRENT_RECORDING_STARTS = 4
 
 
 @dataclass
@@ -30,6 +31,13 @@ class SupervisorState:
     last_error: str | None = None
     last_channel_count: int = 0
     active_recorder_count: int = 0
+
+
+@dataclass
+class RecordingStartTask:
+    recording_id: int
+    broad_no: int
+    task: asyncio.Task[None]
 
 
 class Supervisor:
@@ -48,6 +56,8 @@ class Supervisor:
         self._force_probe_channel_ids: set[int] = set()
         self._manual_record_request_channel_ids: set[int] = set()
         self._manual_stop_hold_broad_no_by_channel_id: dict[int, int] = {}
+        self._recording_start_tasks: dict[int, RecordingStartTask] = {}
+        self._recording_start_semaphore = asyncio.Semaphore(MAX_CONCURRENT_RECORDING_STARTS)
 
     async def start(self) -> None:
         if self.state.running:
@@ -70,6 +80,7 @@ class Supervisor:
         self._force_probe_channel_ids.clear()
         self._manual_record_request_channel_ids.clear()
         self._manual_stop_hold_broad_no_by_channel_id.clear()
+        self._recording_start_tasks.clear()
         self.state.running = True
         self.state.started_at = now_utc()
         self._http_client = httpx.AsyncClient(timeout=8.0)
@@ -84,6 +95,7 @@ class Supervisor:
         if self._task is not None:
             await self._task
 
+        await self._cancel_recording_start_tasks()
         await self.recorder.stop_all(reason=recorder_stop_reason)
 
         if self._http_client is not None:
@@ -109,6 +121,165 @@ class Supervisor:
     def request_force_probe(self, channel_id: int) -> None:
         self._force_probe_channel_ids.add(channel_id)
         self._wake_event.set()
+
+    async def _cancel_recording_start_tasks(self) -> None:
+        tasks = [task_info.task for task_info in self._recording_start_tasks.values()]
+        self._recording_start_tasks.clear()
+
+        for task in tasks:
+            task.cancel()
+
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _get_recording_start_task(self, channel_id: int) -> RecordingStartTask | None:
+        task_info = self._recording_start_tasks.get(channel_id)
+        if task_info is None:
+            return None
+        if task_info.task.done():
+            self._recording_start_tasks.pop(channel_id, None)
+            return None
+        return task_info
+
+    def _schedule_recording_start(
+        self,
+        *,
+        channel: dict,
+        recording: dict,
+        payload: dict,
+        created: bool,
+        prior_status: str,
+        prior_broad_no: int | None,
+        broad_no: int,
+    ) -> bool:
+        channel_id = int(channel["id"])
+        if self._get_recording_start_task(channel_id) is not None:
+            return False
+
+        recording_id = int(recording["id"])
+        task = asyncio.create_task(
+            self._run_recording_start(
+                channel=dict(channel),
+                recording=dict(recording),
+                payload=dict(payload),
+                created=created,
+                prior_status=prior_status,
+                prior_broad_no=prior_broad_no,
+                broad_no=broad_no,
+            ),
+            name=f"start-recording-{channel_id}-{recording_id}",
+        )
+        self._recording_start_tasks[channel_id] = RecordingStartTask(
+            recording_id=recording_id,
+            broad_no=broad_no,
+            task=task,
+        )
+        task.add_done_callback(
+            lambda done_task, done_channel_id=channel_id: self._discard_recording_start_task(
+                done_channel_id,
+                done_task,
+            )
+        )
+        return True
+
+    def _discard_recording_start_task(
+        self,
+        channel_id: int,
+        done_task: asyncio.Task[None],
+    ) -> None:
+        current = self._recording_start_tasks.get(channel_id)
+        if current is not None and current.task is done_task:
+            self._recording_start_tasks.pop(channel_id, None)
+
+    async def _run_recording_start(
+        self,
+        *,
+        channel: dict,
+        recording: dict,
+        payload: dict,
+        created: bool,
+        prior_status: str,
+        prior_broad_no: int | None,
+        broad_no: int,
+    ) -> None:
+        channel_id = int(channel["id"])
+        recording_id = int(recording["id"])
+
+        try:
+            async with self._recording_start_semaphore:
+                ensure_result = await self.recorder.ensure_recording(
+                    channel=channel,
+                    recording=recording,
+                    payload=payload,
+                )
+
+            if ensure_result.finalizing:
+                next_status = "remuxing"
+            elif ensure_result.standby_no_stream:
+                next_status = "standby_no_stream"
+            else:
+                next_status = "recording" if ensure_result.active else "error"
+
+            if created and ensure_result.active:
+                event_log_model.add_event_log(
+                    self.settings,
+                    level="info",
+                    event_type="live_detected",
+                    channel_id=channel_id,
+                    recording_id=recording_id,
+                    message="라이브를 감지했고 녹화 세션을 연결했습니다.",
+                    payload={"broad_no": broad_no},
+                )
+
+            self._log_live_status_transition(
+                channel=channel,
+                recording_id=recording_id,
+                broad_no=broad_no,
+                prior_status=prior_status,
+                prior_broad_no=prior_broad_no,
+                next_status=next_status,
+                error=ensure_result.error,
+            )
+
+            channel_model.update_status_if_current_broadcast(
+                self.settings,
+                channel_id,
+                broad_no=broad_no,
+                last_status=next_status,
+                last_error=ensure_result.error,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # pragma: no cover
+            error_message = f"녹화 시작 백그라운드 작업에서 오류가 발생했습니다: {exc}"
+            logger.exception(
+                "Recording start task failed for channel_id=%s recording_id=%s",
+                channel_id,
+                recording_id,
+            )
+            recording_model.update_recording_fields(
+                self.settings,
+                recording_id,
+                status="failed",
+                error_message=error_message,
+            )
+            channel_model.update_status_if_current_broadcast(
+                self.settings,
+                channel_id,
+                broad_no=broad_no,
+                last_status="error",
+                last_error=error_message,
+            )
+            event_log_model.add_event_log(
+                self.settings,
+                level="error",
+                event_type="record_start_failed",
+                channel_id=channel_id,
+                recording_id=recording_id,
+                message=error_message,
+            )
+        finally:
+            self.state.active_recorder_count = self.recorder.active_count
 
     async def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -325,14 +496,34 @@ class Supervisor:
             payload,
         )
 
-        ensure_result = await self.recorder.ensure_recording(
-            channel=channel,
-            recording=recording,
-            payload=payload,
-        )
-
         prior_status = str(channel.get("last_status") or "")
         prior_broad_no = self._parse_optional_int(channel.get("last_broad_no"))
+        existing_result = await self.recorder.get_existing_recording_result(
+            recording=recording,
+        )
+        if existing_result is None:
+            self._schedule_recording_start(
+                channel=channel,
+                recording=recording,
+                payload=payload,
+                created=created,
+                prior_status=prior_status,
+                prior_broad_no=prior_broad_no,
+                broad_no=broad_no,
+            )
+
+            channel_model.update_probe_state(
+                self.settings,
+                channel_id,
+                last_status="starting",
+                last_broad_no=broad_no,
+                last_probe_at=now_iso,
+                last_error=None,
+                offline_streak=0,
+            )
+            return
+
+        ensure_result = existing_result
         if ensure_result.finalizing:
             next_status = "remuxing"
         elif ensure_result.standby_no_stream:

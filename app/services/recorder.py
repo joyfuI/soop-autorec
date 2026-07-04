@@ -85,14 +85,12 @@ class RecorderManager:
     def finalizing_count(self) -> int:
         return len(self._finalizing_recording_ids)
 
-    async def ensure_recording(
+    async def get_existing_recording_result(
         self,
         *,
-        channel: dict[str, Any],
         recording: dict[str, Any],
-        payload: dict[str, Any],
-    ) -> EnsureRecordingResult:
-        channel_id = int(channel["id"])
+    ) -> EnsureRecordingResult | None:
+        channel_id = int(recording["channel_id"])
         recording_id = int(recording["id"])
         broad_no = int(recording["broad_no"])
 
@@ -101,11 +99,6 @@ class RecorderManager:
             finalizing_same_recording = recording_id in self._finalizing_recording_ids
 
         if existing_handle is not None and existing_handle.broad_no == broad_no:
-            recording_model.update_recording_with_probe_payload(
-                self.settings,
-                existing_handle.recording_id,
-                payload,
-            )
             process_active = existing_handle.process.returncode is None
             return EnsureRecordingResult(
                 active=process_active,
@@ -115,17 +108,36 @@ class RecorderManager:
             )
 
         if finalizing_same_recording:
-            recording_model.update_recording_with_probe_payload(
-                self.settings,
-                recording_id,
-                payload,
-            )
             return EnsureRecordingResult(
                 active=False,
                 started=False,
                 recording_id=recording_id,
                 finalizing=True,
             )
+
+        return None
+
+    async def ensure_recording(
+        self,
+        *,
+        channel: dict[str, Any],
+        recording: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> EnsureRecordingResult:
+        channel_id = int(channel["id"])
+        broad_no = int(recording["broad_no"])
+
+        existing_result = await self.get_existing_recording_result(recording=recording)
+        if existing_result is not None:
+            recording_model.update_recording_with_probe_payload(
+                self.settings,
+                existing_result.recording_id,
+                payload,
+            )
+            return existing_result
+
+        async with self._lock:
+            existing_handle = self._handles.get(channel_id)
 
         if existing_handle is not None and existing_handle.broad_no != broad_no:
             await self.stop_recording(channel_id, reason="new_broadcast_detected")
@@ -973,7 +985,18 @@ class RecorderManager:
         except OSError as exc:
             raise ValueError(f"streamlink resolver 실행에 실패했습니다: {exc}") from exc
 
-        stdout_data, stderr_data = await process.communicate()
+        try:
+            stdout_data, stderr_data = await process.communicate()
+        except asyncio.CancelledError:
+            if process.returncode is None:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=FORCE_KILL_DELAY_SEC)
+                except TimeoutError:
+                    if process.returncode is None:
+                        process.kill()
+                        await process.wait()
+            raise
         stdout_text = stdout_data.decode("utf-8", errors="ignore")
         stderr_text = stderr_data.decode("utf-8", errors="ignore")
         stderr_tail = self._tail_text(stderr_text)

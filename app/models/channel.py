@@ -195,6 +195,39 @@ def update_last_error(
         conn.commit()
 
 
+def update_status_if_current_broadcast(
+    settings: Settings,
+    channel_id: int,
+    *,
+    broad_no: int,
+    last_status: str,
+    last_error: str | None | object = _UNSET,
+) -> bool:
+    timestamp = now_utc().isoformat()
+    set_parts = ["last_status = ?", "updated_at = ?"]
+    values: list[Any] = [last_status, timestamp]
+
+    if last_error is not _UNSET:
+        set_parts.append("last_error = ?")
+        values.append(last_error)
+
+    values.extend([channel_id, broad_no])
+
+    with connect(settings) as conn:
+        cursor = conn.execute(
+            f"""
+            UPDATE channels
+            SET {', '.join(set_parts)}
+            WHERE id = ?
+              AND last_broad_no = ?
+            """,
+            values,
+        )
+        conn.commit()
+
+    return cursor.rowcount > 0
+
+
 def mark_recording_error_if_current_broadcast(
     settings: Settings,
     channel_id: int,

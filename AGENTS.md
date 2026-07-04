@@ -15,6 +15,7 @@
 
 - `broad` probe 응답이 빈 body면 오류가 아니라 정상 `OFFLINE`이다.
 - `PROBE_ERROR`만으로 녹화를 즉시 중단하지 않는다.
+- 라이브 감지 후 `streamlink`/구독플러스 URL 해석 및 `ffmpeg` 시작은 채널별 백그라운드 task로 처리해 `broad` probe 순회를 막지 않으며, 시작 작업 동시성은 내부 semaphore로 제한한다.
 - 녹화 세션 식별 키는 `recordings.id`다. 같은 `(userId, broadNo)`라도 끊김 후 재시작된 구간은 별도 녹화 세션으로 기록할 수 있다.
 - 최종 출력 파일명이 충돌하면 remux 단계에서 ` (1)`, ` (2)` 접미사를 붙여 저장하고 기존 파일은 덮어쓰지 않는다.
 - remux/이동 실패 시 0바이트 초과 tmp 파일이 남아 있으면 `partial`로 기록하고 `temp_path`를 복구 경로로 남긴다.
