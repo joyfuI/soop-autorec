@@ -18,6 +18,7 @@ SOOP 채널 라이브를 자동 감지해 `ffmpeg`로 녹화/정리(remux)하는
 - 웹 UI에서 서버 재시작 요청 지원
 - 인증 방식 2종 지원 (`username/password`, `cookies.txt`)
 - 채널별 stream password 지원
+- 채널별 구독플러스 자동 녹화 건너뛰기 지원
 - 선택적 프록시 지원
 
 ## 요구사항
@@ -95,6 +96,12 @@ docker compose up -d
 - API: `GET /api/settings/auth`, `PUT /api/settings/auth`
 - 브라우저에서 내보낸 `cookies.txt` 또는 `username/password`를 사용할 수 있습니다.
 - Docker에서 `cookies.txt`를 사용할 때는 컨테이너 내부 경로(`/workspace/data/cookies/...`)를 설정해야 합니다.
+
+## 구독플러스 건너뛰기
+
+- `/channels`에서 채널별 `구독플러스 건너뛰기` 옵션을 설정할 수 있습니다.
+- 옵션이 켜진 채널은 자동 녹화 중 `broad` 응답의 `subscriptionOnly > 0`이 확인되면 녹화 세션 생성, 로그인, 재생 URL 해석을 시도하지 않고 건너뜁니다.
+- 수동 녹화 요청은 이 옵션을 무시하고 구독플러스 녹화를 시도합니다.
 
 ## 프록시 설정
 

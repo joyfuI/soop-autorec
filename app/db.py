@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS channels (
   user_id TEXT NOT NULL UNIQUE,
   display_name TEXT,
   enabled INTEGER NOT NULL DEFAULT 1,
+  skip_subscription_plus INTEGER NOT NULL DEFAULT 0,
   output_template TEXT,
   stream_password TEXT,
   preferred_quality TEXT NOT NULL DEFAULT 'best',
@@ -72,8 +73,22 @@ def initialize_database(settings: Settings) -> None:
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
     conn.execute("DROP INDEX IF EXISTS idx_recordings_stopped_at;")
+    _migrate_channels_table(conn)
     _migrate_settings_table(conn)
     _migrate_recordings_table(conn)
+
+
+def _migrate_channels_table(conn: sqlite3.Connection) -> None:
+    columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(channels)").fetchall()
+        if row and len(row) >= 2
+    }
+    if "skip_subscription_plus" not in columns:
+        conn.execute(
+            "ALTER TABLE channels "
+            "ADD COLUMN skip_subscription_plus INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 def _migrate_settings_table(conn: sqlite3.Connection) -> None:

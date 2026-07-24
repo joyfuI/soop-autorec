@@ -7,6 +7,7 @@ class ChannelBase(BaseModel):
     user_id: str = Field(min_length=1, max_length=80)
     display_name: str | None = Field(default=None, max_length=120)
     enabled: bool = True
+    skip_subscription_plus: bool = False
     output_template: str | None = Field(default=None, max_length=500)
     stream_password: str | None = Field(default=None, max_length=255)
     preferred_quality: str = Field(default="best", max_length=30)
@@ -19,6 +20,7 @@ class ChannelCreate(ChannelBase):
 class ChannelUpdate(BaseModel):
     display_name: str | None = Field(default=None, max_length=120)
     enabled: bool = True
+    skip_subscription_plus: bool = False
     output_template: str | None = Field(default=None, max_length=500)
     stream_password: str | None = Field(default=None, max_length=255)
     preferred_quality: str = Field(default="best", max_length=30)
@@ -29,6 +31,7 @@ class ChannelRead(BaseModel):
     user_id: str
     display_name: str | None
     enabled: bool
+    skip_subscription_plus: bool
     output_template: str | None
     stream_password: str | None
     preferred_quality: str

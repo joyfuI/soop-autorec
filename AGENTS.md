@@ -23,6 +23,7 @@
 - remux 중인 같은 `(userId, broadNo)`가 다시 라이브로 감지되면 기존 remux는 백그라운드로 계속 진행하고 새 녹화 세션을 바로 시작한다.
 - 재생 URL은 `https://play.sooplive.co.kr/{userId}` 고정이다.
 - 구독플러스 감지는 `broad` payload의 `subscriptionOnly > 0`을 힌트로 쓰고, `player_live_api.php` 응답의 `TS_TYPE=2` 및 `TS` URL로 확정한다.
+- 채널의 `skip_subscription_plus`가 켜져 있으면 자동 녹화에서 `subscriptionOnly > 0`인 방송은 녹화 세션 생성과 인증/URL 해석 전에 건너뛰고, 활성 녹화가 없으면 `online` 상태를 유지한다. 수동 녹화 요청은 이 옵션을 무시한다.
 - `TS_TYPE=2`/`TS`가 없지만 `player_live_api.php` 응답이 권한 있음(`RESULT=1`)인 구독플러스 방송은 PC 웹 HLS 경로로 fallback한다.
 - PC 웹 HLS fallback은 `player_live_api.php type=aid quality=master`로 AID를 받고, `broad_stream_assign.html`에 `broad_key={broadNo}-common-master-hls`를 요청한 뒤 `private_auth.php type=subs_live`로 CDN 쿠키를 받는다.
 - 구독플러스 녹화는 로컬 HLS 프록시가 `private_auth.php`로 받은 `CloudFront-*` 서명 쿠키를 CDN manifest/segment 요청에 붙인다.
@@ -88,6 +89,7 @@
 
 ## DB 마이그레이션 메모
 
+- 앱 기동 시 기존 `channels` 테이블에 `skip_subscription_plus` 컬럼이 없으면 기본값 `0`으로 자동 추가한다.
 - 앱 기동 시 스키마 정리 단계에서 구형 `settings.updated_at` 구조를 자동 제거한다.
 - 앱 기동 시 `idx_recordings_stopped_at` 인덱스를 자동 제거한다.
 - 앱 기동 시 구형 `recordings`의 `UNIQUE(user_id, broad_no)` 제약을 제거하기 위해 테이블을 자동 재작성한다.

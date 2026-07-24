@@ -13,6 +13,7 @@ from app.models import event_log as event_log_model
 from app.models import recording as recording_model
 from app.services.recorder import RecorderManager
 from app.services.soop_probe import ProbeResult, ProbeStatus, probe_channel
+from app.services.soop_subscription import has_subscription_plus_hint
 from app.utils.time import now_utc
 
 logger = logging.getLogger(__name__)
@@ -481,6 +482,35 @@ class Supervisor:
             return
 
         now_iso = now_utc().isoformat()
+
+        if (
+            not manual_record_requested
+            and bool(channel.get("skip_subscription_plus"))
+            and has_subscription_plus_hint(payload)
+        ):
+            active_recording = recording_model.get_active_recording_for_channel(
+                self.settings,
+                channel_id,
+            )
+            next_status = "online"
+            if active_recording is not None:
+                active_status = str(active_recording.get("status") or "")
+                if active_status == "remuxing":
+                    next_status = "remuxing"
+                elif active_status == "stopping":
+                    next_status = "stopping"
+                else:
+                    next_status = "recording"
+            channel_model.update_probe_state(
+                self.settings,
+                channel_id,
+                last_status=next_status,
+                last_broad_no=broad_no,
+                last_probe_at=now_iso,
+                last_error=None,
+                offline_streak=0,
+            )
+            return
 
         recording, created = recording_model.create_or_get_recording_for_live(
             self.settings,

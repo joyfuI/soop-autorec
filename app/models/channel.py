@@ -7,7 +7,7 @@ from app.db import connect
 from app.utils.time import now_utc
 
 CHANNEL_COLUMNS = (
-    "id, user_id, display_name, enabled, output_template, "
+    "id, user_id, display_name, enabled, skip_subscription_plus, output_template, "
     "stream_password, preferred_quality, last_status, last_broad_no, "
     "last_probe_at, last_error, offline_streak, updated_at"
 )
@@ -21,6 +21,7 @@ def _row_to_channel_dict(row: Any) -> dict[str, Any]:
         "user_id": row["user_id"],
         "display_name": row["display_name"],
         "enabled": bool(row["enabled"]),
+        "skip_subscription_plus": bool(row["skip_subscription_plus"]),
         "output_template": row["output_template"],
         "stream_password": row["stream_password"],
         "preferred_quality": row["preferred_quality"],
@@ -58,6 +59,7 @@ def create_channel(
     user_id: str,
     display_name: str | None,
     enabled: bool,
+    skip_subscription_plus: bool,
     output_template: str | None,
     stream_password: str | None,
     preferred_quality: str,
@@ -68,14 +70,15 @@ def create_channel(
         cursor = conn.execute(
             """
             INSERT INTO channels (
-              user_id, display_name, enabled, output_template,
+              user_id, display_name, enabled, skip_subscription_plus, output_template,
               stream_password, preferred_quality, last_status, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 'offline', ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'offline', ?)
             """,
             (
                 user_id,
                 display_name,
                 1 if enabled else 0,
+                1 if skip_subscription_plus else 0,
                 output_template,
                 stream_password,
                 preferred_quality,
@@ -97,6 +100,7 @@ def update_channel(
     *,
     display_name: str | None,
     enabled: bool,
+    skip_subscription_plus: bool,
     output_template: str | None,
     stream_password: str | None,
     preferred_quality: str,
@@ -110,6 +114,7 @@ def update_channel(
             SET
               display_name = ?,
               enabled = ?,
+              skip_subscription_plus = ?,
               output_template = ?,
               stream_password = ?,
               preferred_quality = ?,
@@ -119,6 +124,7 @@ def update_channel(
             (
                 display_name,
                 1 if enabled else 0,
+                1 if skip_subscription_plus else 0,
                 output_template,
                 stream_password,
                 preferred_quality,
