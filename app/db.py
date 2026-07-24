@@ -1,6 +1,6 @@
 ﻿import sqlite3
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 from app.config import Settings
@@ -62,7 +62,7 @@ def initialize_database(settings: Settings) -> None:
     Path(settings.temp_root_dir).mkdir(parents=True, exist_ok=True)
     Path(settings.cookies_dir).mkdir(parents=True, exist_ok=True)
 
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         conn.execute("PRAGMA foreign_keys=ON;")
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA busy_timeout=5000;")

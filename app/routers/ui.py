@@ -378,6 +378,14 @@ async def delete_channel(
     if channel is None:
         return _build_redirect("/channels", error="채널을 찾을 수 없습니다.", tab=tab_key)
 
+    active_recording = recording_model.get_active_recording_for_channel(settings, channel_id)
+    if active_recording is not None:
+        return _build_redirect(
+            "/channels",
+            error="진행 중인 녹화 또는 remux가 있어 채널을 삭제할 수 없습니다.",
+            tab=tab_key,
+        )
+
     channel_model.delete_channel(settings, channel_id)
     return _build_redirect(
         "/channels",

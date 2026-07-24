@@ -127,8 +127,8 @@ def _initialize_next_id(path: Path) -> None:
         return
 
     records = _read_event_records(path)
-    last_id = records[-1]["id"] if records else 0
-    _EVENT_LOG_NEXT_ID = last_id + 1
+    max_id = max((record["id"] for record in records), default=0)
+    _EVENT_LOG_NEXT_ID = max_id + 1
 
 
 def cleanup_event_logs(settings: Settings) -> int:
@@ -157,8 +157,8 @@ def cleanup_event_logs(settings: Settings) -> int:
         if removed_count > 0:
             _write_event_records(path, kept)
 
-        last_id = kept[-1]["id"] if kept else 0
-        next_id = last_id + 1
+        max_id = max((record["id"] for record in kept), default=0)
+        next_id = max_id + 1
         if _EVENT_LOG_NEXT_ID is None or _EVENT_LOG_NEXT_ID < next_id:
             _EVENT_LOG_NEXT_ID = next_id
 

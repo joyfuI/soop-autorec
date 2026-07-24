@@ -95,6 +95,7 @@ docker compose up -d
 - UI: `/channels` 상단의 전역 인증 설정 폼
 - API: `GET /api/settings/auth`, `PUT /api/settings/auth`
 - 브라우저에서 내보낸 `cookies.txt` 또는 `username/password`를 사용할 수 있습니다.
+- Netscape 형식 `cookies.txt`의 `#HttpOnly_` 쿠키도 인증 쿠키로 읽습니다.
 - Docker에서 `cookies.txt`를 사용할 때는 컨테이너 내부 경로(`/workspace/data/cookies/...`)를 설정해야 합니다.
 
 ## 구독플러스 건너뛰기
@@ -125,6 +126,7 @@ docker compose up -d
 - `${mm}`: 방송 시작 시각 기준 분 2자리(`mm`)
 - `${ss}`: 방송 시작 시각 기준 초 2자리(`ss`)
 - 최종 파일 경로가 이미 있으면 자동으로 ` (1)`, ` (2)` 접미사를 붙여 다른 파일명으로 저장합니다.
+- 여러 remux가 동시에 같은 파일명을 선택해도 기존 파일을 덮어쓰지 않습니다.
 
 예시:
 
@@ -155,6 +157,8 @@ JSON API를 통해 UI 없이도 채널/설정/상태를 자동화할 수 있습�
   - `PUT /api/settings/auth`
   - `GET /api/settings/proxy`
   - `PUT /api/settings/proxy`
+
+진행 중인 녹화 또는 remux가 있는 채널 삭제 요청은 `409 Conflict`로 거부됩니다.
 
 간단한 사용 예시:
 

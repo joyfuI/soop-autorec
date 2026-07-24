@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import os
 import re
@@ -30,8 +31,16 @@ from app.utils.time import now_utc
 
 logger = logging.getLogger(__name__)
 FORCE_KILL_DELAY_SEC = 30
+STREAM_URL_RESOLVE_TIMEOUT_SEC = 45
+RESOLVER_TERMINATE_GRACE_SEC = 5
 DEFAULT_OUTPUT_TEMPLATE = "${displayName}/${YY}${MM}${DD} ${title} [${broadNo}].mp4"
 MAX_FINAL_PATH_CANDIDATES = 500
+LINK_FALLBACK_ERRNOS = {
+    errno.EACCES,
+    errno.EPERM,
+    errno.EXDEV,
+    getattr(errno, "ENOTSUP", errno.EPERM),
+}
 
 
 class StreamUrlNotReadyError(ValueError):
@@ -739,6 +748,7 @@ class RecorderManager:
 
             ffmpeg_cmd = [
                 self.settings.ffmpeg_binary,
+                "-nostdin",
                 "-y",
                 "-i",
                 str(temp_path),
@@ -779,7 +789,10 @@ class RecorderManager:
             ):
                 try:
                     candidate_path.parent.mkdir(parents=True, exist_ok=True)
-                    os.replace(remux_output_path, candidate_path)
+                    installed = self._install_file_without_overwrite(
+                        source_path=remux_output_path,
+                        destination_path=candidate_path,
+                    )
                 except OSError as exc:
                     reason = (
                         f"remux 완료 파일 이동에 실패했습니다: {exc}. "
@@ -796,6 +809,16 @@ class RecorderManager:
                         error_message=reason,
                     )
                     return False, final_path
+
+                if not installed:
+                    try:
+                        remux_output_path.unlink(missing_ok=True)
+                    except OSError:
+                        logger.warning(
+                            "충돌한 remux 임시 파일 삭제에 실패했습니다: %s",
+                            remux_output_path,
+                        )
+                    continue
 
                 file_size = candidate_path.stat().st_size
                 recording_model.update_recording_fields(
@@ -903,6 +926,51 @@ class RecorderManager:
                 continue
         return None
 
+    def _install_file_without_overwrite(
+        self,
+        *,
+        source_path: Path,
+        destination_path: Path,
+    ) -> bool:
+        try:
+            os.link(source_path, destination_path)
+        except FileExistsError:
+            return False
+        except OSError as exc:
+            if exc.errno not in LINK_FALLBACK_ERRNOS:
+                raise
+
+            destination_created = False
+            try:
+                source = source_path.open("rb")
+                try:
+                    destination = destination_path.open("xb")
+                except FileExistsError:
+                    source.close()
+                    return False
+                destination_created = True
+
+                with source, destination:
+                    shutil.copyfileobj(source, destination)
+                    destination.flush()
+                    os.fsync(destination.fileno())
+            except OSError:
+                if destination_created:
+                    destination_path.unlink(missing_ok=True)
+                raise
+        else:
+            try:
+                source_path.unlink()
+            except OSError:
+                logger.warning("설치된 remux 임시 파일 삭제에 실패했습니다: %s", source_path)
+            return True
+
+        try:
+            source_path.unlink()
+        except OSError:
+            logger.warning("복사 완료된 remux 임시 파일 삭제에 실패했습니다: %s", source_path)
+        return True
+
     def _render_relative_output_path(
         self,
         *,
@@ -986,16 +1054,24 @@ class RecorderManager:
             raise ValueError(f"streamlink resolver 실행에 실패했습니다: {exc}") from exc
 
         try:
-            stdout_data, stderr_data = await process.communicate()
+            stdout_data, stderr_data = await asyncio.wait_for(
+                process.communicate(),
+                timeout=STREAM_URL_RESOLVE_TIMEOUT_SEC,
+            )
+        except TimeoutError as exc:
+            await self._terminate_subprocess(
+                process,
+                grace_sec=RESOLVER_TERMINATE_GRACE_SEC,
+            )
+            raise StreamUrlNotReadyError(
+                f"streamlink 스트림 URL 해석이 {STREAM_URL_RESOLVE_TIMEOUT_SEC}초 안에 "
+                "완료되지 않았습니다."
+            ) from exc
         except asyncio.CancelledError:
-            if process.returncode is None:
-                process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=FORCE_KILL_DELAY_SEC)
-                except TimeoutError:
-                    if process.returncode is None:
-                        process.kill()
-                        await process.wait()
+            await self._terminate_subprocess(
+                process,
+                grace_sec=RESOLVER_TERMINATE_GRACE_SEC,
+            )
             raise
         stdout_text = stdout_data.decode("utf-8", errors="ignore")
         stderr_text = stderr_data.decode("utf-8", errors="ignore")
@@ -1017,6 +1093,23 @@ class RecorderManager:
 
         return stream_url
 
+    async def _terminate_subprocess(
+        self,
+        process: asyncio.subprocess.Process,
+        *,
+        grace_sec: float,
+    ) -> None:
+        if process.returncode is not None:
+            return
+
+        process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=grace_sec)
+        except TimeoutError:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+
     def _build_record_cmd(
         self,
         *,
@@ -1025,6 +1118,7 @@ class RecorderManager:
     ) -> list[str]:
         return [
             self.settings.ffmpeg_binary,
+            "-nostdin",
             "-y",
             "-i",
             input_url,

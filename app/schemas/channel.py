@@ -1,6 +1,6 @@
 ﻿from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ChannelBase(BaseModel):
@@ -11,6 +11,14 @@ class ChannelBase(BaseModel):
     output_template: str | None = Field(default=None, max_length=500)
     stream_password: str | None = Field(default=None, max_length=255)
     preferred_quality: str = Field(default="best", max_length=30)
+
+    @field_validator("user_id")
+    @classmethod
+    def normalize_user_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("user_id는 공백일 수 없습니다.")
+        return normalized
 
 
 class ChannelCreate(ChannelBase):

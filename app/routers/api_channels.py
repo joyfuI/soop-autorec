@@ -5,6 +5,7 @@ import sqlite3
 from fastapi import APIRouter, HTTPException, Request, status
 
 from app.models import channel as channel_model
+from app.models import recording as recording_model
 from app.schemas.channel import ChannelCreate, ChannelRead, ChannelUpdate
 
 router = APIRouter(prefix="/api/channels", tags=["channels"])
@@ -81,6 +82,13 @@ async def api_update_channel(request: Request, channel_id: int, payload: Channel
 @router.delete("/{channel_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def api_delete_channel(request: Request, channel_id: int) -> None:
     settings = request.app.state.settings
+    active_recording = recording_model.get_active_recording_for_channel(settings, channel_id)
+    if active_recording is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="진행 중인 녹화 또는 remux가 있어 채널을 삭제할 수 없습니다.",
+        )
+
     deleted = channel_model.delete_channel(settings, channel_id)
     if not deleted:
         raise HTTPException(

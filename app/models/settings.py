@@ -10,6 +10,7 @@ SOOP_USERNAME_KEY = "soop_username"
 SOOP_PASSWORD_KEY = "soop_password"
 COOKIES_TXT_PATH_KEY = "cookies_txt_path"
 CONTROL_PROXY_URL_KEY = "control_proxy_url"
+_UNSET = object()
 
 
 def list_settings(settings: Settings) -> dict[str, str]:
@@ -30,15 +31,7 @@ def get_setting(settings: Settings, key: str, default: str | None = None) -> str
 
 def upsert_setting(settings: Settings, key: str, value: str) -> None:
     with connect(settings) as conn:
-        conn.execute(
-            """
-            INSERT INTO settings (key, value)
-            VALUES (?, ?)
-            ON CONFLICT(key) DO UPDATE SET
-              value = excluded.value
-            """,
-            (key, value),
-        )
+        _upsert_setting(conn, key, value)
         conn.commit()
 
 
@@ -46,6 +39,27 @@ def delete_setting(settings: Settings, key: str) -> None:
     with connect(settings) as conn:
         conn.execute("DELETE FROM settings WHERE key = ?", (key,))
         conn.commit()
+
+
+def _upsert_setting(conn, key: str, value: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO settings (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value
+        """,
+        (key, value),
+    )
+
+
+def _apply_optional_setting(conn, key: str, value: str | None | object) -> None:
+    if value is _UNSET:
+        return
+    if value is None:
+        conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+        return
+    _upsert_setting(conn, key, value)
 
 
 def get_auth_settings(settings: Settings) -> dict[str, str | None | bool]:
@@ -84,25 +98,26 @@ def update_auth_settings(
     cookies_txt_path: str | None,
     clear_password: bool = False,
 ) -> dict[str, str | None | bool]:
+    username_value: str | None | object = _UNSET
     if username is not None:
-        if username.strip():
-            upsert_setting(settings, SOOP_USERNAME_KEY, username.strip())
-        else:
-            delete_setting(settings, SOOP_USERNAME_KEY)
+        username_value = username.strip() or None
 
+    password_value: str | None | object = _UNSET
     if clear_password:
-        delete_setting(settings, SOOP_PASSWORD_KEY)
+        password_value = None
     elif password is not None:
         if password.strip():
-            encrypted_password = secrets_service.encrypt_password_value(settings, password)
-            upsert_setting(settings, SOOP_PASSWORD_KEY, encrypted_password)
+            password_value = secrets_service.encrypt_password_value(settings, password)
 
+    cookies_txt_path_value: str | None | object = _UNSET
     if cookies_txt_path is not None:
-        normalized = cookies_txt_path.strip()
-        if normalized:
-            upsert_setting(settings, COOKIES_TXT_PATH_KEY, normalized)
-        else:
-            delete_setting(settings, COOKIES_TXT_PATH_KEY)
+        cookies_txt_path_value = cookies_txt_path.strip() or None
+
+    with connect(settings) as conn:
+        _apply_optional_setting(conn, SOOP_USERNAME_KEY, username_value)
+        _apply_optional_setting(conn, SOOP_PASSWORD_KEY, password_value)
+        _apply_optional_setting(conn, COOKIES_TXT_PATH_KEY, cookies_txt_path_value)
+        conn.commit()
 
     return get_auth_settings(settings)
 

@@ -4,6 +4,7 @@ import base64
 import binascii
 import json
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -24,6 +25,7 @@ LOGIN_URL = "https://login.sooplive.com/app/LoginAction.php"
 LOGIN_REQUIRED_RESULT = -6
 LOGIN_RESULT_OK = 1
 SUBSCRIPTION_PROXY_REFRESH_MARGIN_SEC = 25
+SUBSCRIPTION_PROXY_UNKNOWN_EXPIRY_REFRESH_SEC = 30
 CLOUDFRONT_COOKIE_NAMES = {
     "CloudFront-Signature",
     "CloudFront-Key-Pair-Id",
@@ -34,6 +36,10 @@ PLAYBACK_ORIGIN = "https://play.sooplive.com"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
+)
+HLS_URI_ATTRIBUTE_PATTERN = re.compile(
+    r"(?P<prefix>\bURI=)(?P<quote>[\"'])(?P<uri>[^\"']+)(?P=quote)",
+    re.IGNORECASE,
 )
 
 
@@ -87,6 +93,7 @@ class SubscriptionPlusHlsProxy:
         self._thread: threading.Thread | None = None
         self._origin = _url_origin(stream.url)
         self._expires_at = _cloudfront_policy_expires_at(self._cookies)
+        self._last_refresh_at = time.time()
         self.refresh_count = 0
 
     @property
@@ -138,7 +145,7 @@ class SubscriptionPlusHlsProxy:
             headers = self._build_upstream_headers(request)
             with httpx.Client(
                 timeout=self.timeout_sec,
-                follow_redirects=False,
+                follow_redirects=True,
                 headers=headers,
                 trust_env=False,
             ) as client:
@@ -182,11 +189,17 @@ class SubscriptionPlusHlsProxy:
             now = time.time()
             if self._expires_at and self._expires_at - now > SUBSCRIPTION_PROXY_REFRESH_MARGIN_SEC:
                 return
+            if (
+                self._expires_at is None
+                and now - self._last_refresh_at < SUBSCRIPTION_PROXY_UNKNOWN_EXPIRY_REFRESH_SEC
+            ):
+                return
 
             cookies, expires_at = self._refresh_cloudfront_cookies()
             self._cookies = cookies
             self._base_cookies = _exclude_cloudfront_cookies(cookies)
             self._expires_at = expires_at
+            self._last_refresh_at = now
             self.refresh_count += 1
 
     def _refresh_cloudfront_cookies(self) -> tuple[dict[str, str], int | None]:
@@ -267,8 +280,19 @@ class SubscriptionPlusHlsProxy:
         for raw_line in text.splitlines(keepends=True):
             line, newline = _split_line_ending(raw_line)
             stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                rewritten.append(raw_line.replace(self._origin, ""))
+            if not stripped:
+                rewritten.append(raw_line)
+                continue
+            if stripped.startswith("#"):
+                rewritten_line = HLS_URI_ATTRIBUTE_PATTERN.sub(
+                    lambda match: (
+                        f"{match.group('prefix')}{match.group('quote')}"
+                        f"{self._rewrite_manifest_uri(match.group('uri'), base_url=base_url)}"
+                        f"{match.group('quote')}"
+                    ),
+                    line,
+                )
+                rewritten.append(f"{rewritten_line}{newline}")
                 continue
 
             rewritten.append(f"{self._rewrite_manifest_uri(stripped, base_url=base_url)}{newline}")
@@ -795,7 +819,11 @@ def load_soop_cookie_file(cookies_txt_path: str | None) -> dict[str, str]:
     now = int(time.time())
     for raw_line in content.splitlines():
         line = raw_line.strip()
-        if not line or line.startswith("#"):
+        if not line:
+            continue
+        if line.startswith("#HttpOnly_"):
+            line = line[len("#HttpOnly_") :]
+        elif line.startswith("#"):
             continue
 
         name = ""
@@ -975,7 +1003,7 @@ def _build_subscription_referer(*, user_id: str, broad_no: int) -> str:
 def _is_subscription_plus_channel(channel_info: dict[str, Any]) -> bool:
     ts_url = str(channel_info.get("TS") or "").strip()
     ts_type = str(channel_info.get("TS_TYPE") or "").strip()
-    return ts_type == "2" and "playlist.m3u8" in ts_url and "live-tm-sub-" in ts_url
+    return ts_type == "2" and bool(ts_url)
 
 
 def _map_player_quality(preferred_quality: str) -> str:
