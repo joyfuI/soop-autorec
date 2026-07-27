@@ -74,6 +74,15 @@ class RecordingHandle:
     capture_done: asyncio.Event = field(default_factory=asyncio.Event)
 
 
+@dataclass(frozen=True)
+class InterruptedRecordingRecovery:
+    channel_id: int
+    recording_id: int
+    temp_path: Path
+    remux_temp_path: Path
+    final_path: Path
+
+
 class RecorderManager:
     def __init__(
         self,
@@ -172,6 +181,160 @@ class RecorderManager:
                 return
 
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def recover_interrupted_recordings(
+        self,
+        recordings: list[dict[str, Any]],
+    ) -> int:
+        recoveries: list[InterruptedRecordingRecovery] = []
+
+        for recording in recordings:
+            temp_path_raw = str(recording.get("temp_path") or "").strip()
+            final_path_raw = str(recording.get("final_path") or "").strip()
+            if not temp_path_raw or not final_path_raw:
+                continue
+
+            temp_path = Path(temp_path_raw)
+            if not self._is_nonempty_file(temp_path):
+                continue
+
+            recording_id = int(recording["id"])
+            recovery = InterruptedRecordingRecovery(
+                channel_id=int(recording["channel_id"]),
+                recording_id=recording_id,
+                temp_path=temp_path,
+                remux_temp_path=self._build_recovery_remux_temp_path(
+                    temp_path=temp_path,
+                    recording_id=recording_id,
+                ),
+                final_path=Path(final_path_raw),
+            )
+            recording_model.update_recording_fields(
+                self.settings,
+                recording_id,
+                status="remuxing",
+                error_message=None,
+            )
+            recoveries.append(recovery)
+
+        if not recoveries:
+            return 0
+
+        async with self._lock:
+            self._finalizing_recording_ids.update(
+                recovery.recording_id for recovery in recoveries
+            )
+            task = asyncio.create_task(
+                self._run_interrupted_recording_recoveries(recoveries),
+                name="recover-interrupted-recordings",
+            )
+            self._finalize_tasks.add(task)
+            task.add_done_callback(self._finalize_tasks.discard)
+
+        return len(recoveries)
+
+    async def _run_interrupted_recording_recoveries(
+        self,
+        recoveries: list[InterruptedRecordingRecovery],
+    ) -> None:
+        for recovery in recoveries:
+            try:
+                try:
+                    remux_result, resolved_final_path = await self._run_remux(
+                        recording_id=recovery.recording_id,
+                        temp_path=recovery.temp_path,
+                        remux_temp_path=recovery.remux_temp_path,
+                        final_path=recovery.final_path,
+                        stop_requested=True,
+                        stop_reason="startup_recovery",
+                        recorder_exit_code=None,
+                        recorder_stderr="",
+                    )
+                except Exception as exc:  # pragma: no cover - final safety net
+                    logger.exception(
+                        "Interrupted recording recovery failed for recording_id=%s",
+                        recovery.recording_id,
+                    )
+                    recovery_path = self._resolve_recovery_path(
+                        remux_output_path=recovery.remux_temp_path,
+                        temp_path=recovery.temp_path,
+                    )
+                    recording_model.update_recording_fields(
+                        self.settings,
+                        recovery.recording_id,
+                        status="partial" if recovery_path is not None else "failed",
+                        temp_path=str(recovery_path) if recovery_path is not None else None,
+                        file_size_bytes=(
+                            recovery_path.stat().st_size
+                            if recovery_path is not None
+                            else None
+                        ),
+                        error_message=f"중단 녹화 자동 복구 중 오류가 발생했습니다: {exc}",
+                    )
+                    self._log_interrupted_recording_recovery_failure(recovery)
+                    continue
+
+                if remux_result:
+                    event_log_model.add_event_log(
+                        self.settings,
+                        level="info",
+                        event_type="record_recovered",
+                        channel_id=recovery.channel_id,
+                        recording_id=recovery.recording_id,
+                        message=(
+                            "강제 종료로 중단된 녹화를 자동 복구했습니다. "
+                            f"파일명: {resolved_final_path.name}"
+                        ),
+                        payload={"final_path": str(resolved_final_path)},
+                    )
+                else:
+                    self._log_interrupted_recording_recovery_failure(recovery)
+            except Exception:  # pragma: no cover - event/DB logging safety net
+                logger.exception(
+                    "Interrupted recording recovery finalization failed for recording_id=%s",
+                    recovery.recording_id,
+                )
+            finally:
+                async with self._lock:
+                    self._finalizing_recording_ids.discard(recovery.recording_id)
+
+    def _log_interrupted_recording_recovery_failure(
+        self,
+        recovery: InterruptedRecordingRecovery,
+    ) -> None:
+        latest_recording = recording_model.get_recording_by_id(
+            self.settings,
+            recovery.recording_id,
+        )
+        latest_status = str(
+            latest_recording.get("status") if latest_recording is not None else "failed"
+        )
+        error_message = str(
+            latest_recording.get("error_message") if latest_recording is not None else ""
+        ).strip()
+        recovery_path = str(
+            latest_recording.get("temp_path") if latest_recording is not None else ""
+        ).strip()
+        is_partial = latest_status == "partial"
+        payload: dict[str, Any] = {"final_path": str(recovery.final_path)}
+        if recovery_path:
+            payload["recovery_path"] = recovery_path
+        if error_message:
+            payload["error_message"] = error_message
+
+        event_log_model.add_event_log(
+            self.settings,
+            level="warning" if is_partial else "error",
+            event_type="record_recovery_partial" if is_partial else "record_recovery_failed",
+            channel_id=recovery.channel_id,
+            recording_id=recovery.recording_id,
+            message=(
+                "중단 녹화 자동 복구가 partial 상태로 종료되었습니다."
+                if is_partial
+                else "중단 녹화 자동 복구에 실패했습니다."
+            ),
+            payload=payload,
+        )
 
     async def _mark_capture_done(self, handle: RecordingHandle) -> None:
         async with self._lock:
@@ -764,10 +927,18 @@ class RecorderManager:
                     stderr=asyncio.subprocess.PIPE,
                 )
             except OSError as exc:
+                recovery_path = self._resolve_recovery_path(
+                    remux_output_path=remux_output_path,
+                    temp_path=temp_path,
+                )
                 recording_model.update_recording_fields(
                     self.settings,
                     recording_id,
-                    status="failed",
+                    status="partial" if recovery_path is not None else "failed",
+                    temp_path=str(recovery_path) if recovery_path is not None else None,
+                    file_size_bytes=(
+                        recovery_path.stat().st_size if recovery_path is not None else None
+                    ),
                     error_message=f"ffmpeg 실행에 실패했습니다: {exc}",
                 )
                 return False, final_path
@@ -925,6 +1096,20 @@ class RecorderManager:
             except OSError:
                 continue
         return None
+
+    def _is_nonempty_file(self, path: Path) -> bool:
+        try:
+            return path.is_file() and path.stat().st_size > 0
+        except OSError:
+            return False
+
+    def _build_recovery_remux_temp_path(
+        self,
+        *,
+        temp_path: Path,
+        recording_id: int,
+    ) -> Path:
+        return temp_path.with_name(f"{temp_path.stem}.recovery-{recording_id}.mp4")
 
     def _install_file_without_overwrite(
         self,

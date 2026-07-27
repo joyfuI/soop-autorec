@@ -194,6 +194,17 @@ def mark_active_recordings_interrupted(settings: Settings) -> int:
     return int(cursor.rowcount)
 
 
+def list_interrupted_recordings(settings: Settings) -> list[dict[str, Any]]:
+    with connect(settings) as conn:
+        rows = conn.execute(
+            f"SELECT {RECORDING_COLUMNS} FROM recordings "
+            "WHERE status = 'interrupted' AND temp_path IS NOT NULL "
+            "AND final_path IS NOT NULL ORDER BY id"
+        ).fetchall()
+
+    return [_row_to_recording_dict(row) for row in rows]
+
+
 def cleanup_old_recordings(settings: Settings, *, retention_days: int) -> int:
     if retention_days < 1:
         raise ValueError("retention_days must be >= 1")

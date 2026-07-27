@@ -64,14 +64,24 @@ class Supervisor:
         if self.state.running:
             return
 
-        interrupted = recording_model.mark_active_recordings_interrupted(self.settings)
-        if interrupted > 0:
+        interrupted_count = recording_model.mark_active_recordings_interrupted(self.settings)
+        interrupted_recordings = recording_model.list_interrupted_recordings(self.settings)
+        recovery_count = await self.recorder.recover_interrupted_recordings(
+            interrupted_recordings
+        )
+        if interrupted_count > 0 or recovery_count > 0:
             event_log_model.add_event_log(
                 self.settings,
                 level="warning",
                 event_type="startup_recovery",
-                message=f"앱 시작 시 남아 있던 활성 녹화 {interrupted}건을 중단 처리했습니다.",
-                payload={"interrupted_count": interrupted},
+                message=(
+                    f"앱 시작 시 남아 있던 활성 녹화 {interrupted_count}건을 중단 처리하고, "
+                    f"임시 파일 {recovery_count}건의 자동 복구를 예약했습니다."
+                ),
+                payload={
+                    "interrupted_count": interrupted_count,
+                    "recovery_count": recovery_count,
+                },
             )
 
         self._run_maintenance(now_utc(), force=True)
