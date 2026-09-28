@@ -1,219 +1,194 @@
 # soop-autorec
 
-SOOP 채널 라이브를 자동 감지해 `ffmpeg`로 녹화/정리(remux)하는 FastAPI 서비스입니다.
+SOOP 채널의 라이브 방송을 자동 감지해 `ffmpeg`로 녹화하고 MP4 파일로 정리하는 FastAPI 서비스입니다. 웹 UI에서 채널, 인증, 프록시를 설정하고 녹화 상태와 이력을 확인할 수 있습니다.
 
 이 프로젝트는 OpenAI Codex로 만들어졌습니다.
 
 관련 잡담은 [https://blog.joyfui.com/1315](https://blog.joyfui.com/1315)
 
-## 주요 기능
+## Quick Start
 
-- 채널/인증/프록시 탭형 관리 UI (`/channels`)
-- SOOP 방송 상태 폴링 기반 자동 녹화
-- 녹화 종료 후 tmp에서 `ffmpeg -c copy` remux 후 recordings로 이동
-- 강제 종료 후 재시작 시 DB에 연결된 녹화 임시 파일 자동 복구
-- 같은 방송 번호가 remux 중 다시 라이브로 감지되면 새 녹화 세션 시작
-- 녹화 이력/이벤트 로그 조회 API
-- 이벤트 로그 JSONL 파일 저장 (`./data/logs/events.jsonl`)
-- 웹 UI 상태/이벤트 실시간 갱신 (SSE 기반)
-- 웹 UI에서 서버 재시작 요청 지원
-- 인증 방식 2종 지원 (`username/password`, `cookies.txt`)
-- 채널별 stream password 지원
-- 채널별 구독플러스 자동 녹화 건너뛰기 지원
-- 선택적 프록시 지원
-
-## 요구사항
-
-- Python 3.14+
-- `uv`
-- `ffmpeg` (PATH 등록 또는 `FFMPEG_BINARY`로 경로 지정)
-
-참고:
-- `streamlink`는 Python 의존성으로 포함되어 `uv sync` 시 자동 설치됩니다.
-- Windows에서 timezone DB가 없는 경우(`tzdata` 미설치), 기본값 `Asia/Seoul`은 KST(UTC+9) 폴백으로 처리됩니다.
-
-## 빠른 시작 (로컬)
+저장소를 받은 뒤 루트 디렉터리에서 진행합니다.
 
 ```bash
-uv sync --group dev
-cp .env.example .env
-uv run python -m app.main
+git clone https://github.com/joyfuI/soop-autorec.git
+cd soop-autorec
 ```
 
-웹 UI: [http://127.0.0.1:8000/](http://127.0.0.1:8000/)
+`.env.example`을 같은 폴더에 복사하고 파일명을 `.env`로 바꿉니다. Windows에서도 파일 탐색기나 편집기로 복사할 수 있습니다. SOOP 로그인 비밀번호를 저장하려면 `.env`의 `APP_SECRET_KEY`에 충분히 긴 임의의 값을 설정하고 보관하세요. 쿠키 인증만 사용한다면 이 키 없이 실행할 수 있습니다.
 
-## 빠른 시작 (Docker 이미지)
+아래의 [Docker 실행](#docker-실행) 또는 [로컬 설치 및 실행](#로컬-설치-및-실행) 중 하나를 선택합니다. 기본 웹 UI 주소는 [http://127.0.0.1:8000/](http://127.0.0.1:8000/)입니다.
 
-### Docker CLI
+## Docker 실행
+
+Docker와 Docker Compose가 필요합니다. 저장소의 [docker-compose.yml](docker-compose.yml)을 그대로 사용하면 로컬 [Dockerfile](Dockerfile)로 런타임 이미지를 빌드합니다.
 
 ```bash
-docker run -d \
-  --name soop-autorec \
-  -p 8000:8000 \
-  -e APP_SECRET_KEY=change-me \
-  -v ./data:/workspace/data \
-  ghcr.io/joyfui/soop-autorec:latest
+docker compose up -d --build
+docker compose logs -f app
 ```
 
-### Docker Compose
+포트와 컨테이너 환경변수는 `docker-compose.yml`에서 변경합니다. 현재 Compose는 `.env`에서 `APP_SECRET_KEY`만 참조하며, 나머지 앱 설정은 Compose의 `environment` 값이 적용됩니다.
 
-`docker-compose.yml`에 아래처럼 `image`를 지정한 뒤 실행합니다.
+미리 빌드된 `ghcr.io/joyfui/soop-autorec:latest` 이미지를 사용하려면 같은 Compose 파일의 `app` 서비스에서 `build` 블록을 제거하고 `image: ghcr.io/joyfui/soop-autorec:latest`를 지정한 뒤 `docker compose up -d`로 실행합니다. 포트·데이터 볼륨·재시작 정책은 기존 설정을 사용합니다.
 
-```yaml
-services:
-  app:
-    image: ghcr.io/joyfui/soop-autorec:latest
-    container_name: soop-autorec
-    environment:
-      HOST: 0.0.0.0
-      PORT: 8000
-      TZ: Asia/Seoul
-      POLL_INTERVAL_SEC: 10
-      OFFLINE_CONFIRM_COUNT: 6
-      FFMPEG_BINARY: ffmpeg
-      APP_SECRET_KEY: ${APP_SECRET_KEY:-}
-      BOOTSTRAP_REPO_URL: https://github.com/joyfuI/soop-autorec.git
-      BOOTSTRAP_REPO_BRANCH: main
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./data:/workspace/data
-    restart: unless-stopped
-    stop_grace_period: 90s
-```
+### 업데이트와 데이터
+
+- 앱 코드는 이미지에 포함되지 않습니다. 컨테이너 시작 시 `BOOTSTRAP_REPO_URL` / `BOOTSTRAP_REPO_BRANCH`에서 코드를 받고 의존성을 설치합니다. 기본 대상은 이 저장소의 `main`입니다. 로컬 앱 코드 수정은 이미지 빌드만으로 반영되지 않으므로, 다른 코드를 실행하려면 이 두 값을 변경하세요.
+- `docker compose restart app`으로 재시작하면 코드 업데이트와 의존성 동기화를 다시 시도합니다. 업데이트 실패 시 기존 코드·환경으로 실행을 시도하지만, 최초 기동에서 실행할 코드나 환경을 준비하지 못하면 시작에 실패합니다. 원인은 `docker compose logs app`에서 확인하세요.
+- `./data`가 컨테이너의 `/workspace/data`에 연결됩니다. 컨테이너를 재생성해도 이 데이터는 유지되지만, 컨테이너 내부 코드와 `.venv`는 다시 준비됩니다.
+- 실행 중인 녹화를 중단하거나 재시작할 때는 아래 [운영상 주의사항](#운영상-주의사항)을 참고하세요.
+
+## 로컬 설치 및 실행
+
+필요한 도구는 Python 3.14+, [uv](https://docs.astral.sh/uv/)와 `ffmpeg`입니다. `ffmpeg`는 PATH에 등록하거나 `.env`의 `FFMPEG_BINARY`에 실행 파일 경로를 지정합니다. Streamlink는 Python 의존성으로 함께 설치됩니다.
+
+Quick Start에서 `.env`를 준비한 뒤 실행합니다.
 
 ```bash
-docker compose up -d
+uv sync --no-dev
+uv run --no-sync python -m app.main
 ```
 
-- 런타임 데이터 경로: `./data -> /workspace/data`
-- 업데이트에 실패하면 기존 상태로 실행을 시도합니다.
-- 최초 clone 전에 bind mount에 남아 있는 빈 `data/.gitkeep` placeholder는 checkout 충돌 방지를 위해 제거됩니다.
-- `/workspace`는 컨테이너 내부 writable layer를 사용하므로, 컨테이너 재생성 시 코드/.venv는 초기화됩니다.
+uv는 기본적으로 `dev` 의존성도 포함하므로 일반 실행에는 `--no-dev`로 제외합니다. `--no-sync`는 준비한 환경을 그대로 사용합니다. [uv 의존성 안내](https://docs.astral.sh/uv/concepts/projects/dependencies/#default-groups)
 
-## 인증 설정
+로컬 코드 업데이트 후에는 서버를 종료하고 `git pull`과 `uv sync --no-dev`를 실행한 뒤 같은 명령으로 시작합니다.
 
-- UI: `/channels` 상단의 전역 인증 설정 폼
-- API: `GET /api/settings/auth`, `PUT /api/settings/auth`
-- 브라우저에서 내보낸 `cookies.txt` 또는 `username/password`를 사용할 수 있습니다.
-- Netscape 형식 `cookies.txt`의 `#HttpOnly_` 쿠키도 인증 쿠키로 읽습니다.
-- Docker에서 `cookies.txt`를 사용할 때는 컨테이너 내부 경로(`/workspace/data/cookies/...`)를 설정해야 합니다.
+## 기본 사용법
 
-## 구독플러스 건너뛰기
+1. 채널 관리의 `채널` 탭에서 SOOP ID를 등록합니다.
+2. `활성화`가 켜진 채널은 방송 감지 시 자동 녹화를 시작합니다. 비활성 채널도 방송 상태는 확인하며, 대시보드에서 수동 시작할 수 있습니다.
+3. 대시보드에서 상태, 최근 이벤트, 녹화 이력을 확인합니다. 녹화 종료 후 파일 정리가 끝나면 `data/recordings`에 MP4가 저장됩니다.
+4. 대시보드의 `중단`으로 녹화를 멈추거나, `시작` / `재시도`로 녹화를 요청할 수 있습니다. 수동 중단한 같은 방송은 현재 앱 실행 동안 자동으로 다시 시작하지 않습니다. 재시도, 오프라인 감지, 새 방송 감지 또는 앱 재시작 후에는 자동 녹화 조건이 다시 적용됩니다.
 
-- `/channels`에서 채널별 `구독플러스 건너뛰기` 옵션을 설정할 수 있습니다.
-- 옵션이 켜진 채널은 자동 녹화 중 `broad` 응답의 `subscriptionOnly > 0`이 확인되면 녹화 세션 생성, 로그인, 재생 URL 해석을 시도하지 않고 건너뜁니다.
-- 수동 녹화 요청은 이 옵션을 무시하고 구독플러스 녹화를 시도합니다.
+대시보드는 변경 시 자동 갱신됩니다. 채널 관리 페이지는 입력 내용을 유지하기 위해 자동 새로고침하지 않습니다.
 
-## 프록시 설정
+## 채널·인증·프록시 설정
 
-- UI: `/channels`의 `프록시 설정` 폼
-- API: `GET /api/settings/proxy`, `PUT /api/settings/proxy`
-- 프록시 URL의 username/password에 포함된 예약 문자(`&`, `(`, `)`, `@` 등)는 저장 시 percent-encoding으로 정규화됩니다.
-- 일반 방송은 방송 정보 조회(`type=live`)와 CDN URL 할당을 직접 연결로 수행하고, 재생 토큰 발급(`type=aid`)에만 DB의 프록시를 적용합니다. 지역 제한 방송의 국내 정보 조회와 해외 토큰 발급을 분리합니다.
-- 국내에서 발급한 토큰은 화질이 `1080p`로 표시되어도 실제 영상이 540p일 수 있습니다. 해외 프록시로 토큰을 발급하면 실제 원본 화질을 받을 수 있으며, 제공 화질은 방송과 SOOP 정책에 따라 달라집니다.
-- 구독플러스는 방송 정보/재생 URL 해석과 CDN 인증·갱신에 프록시를 적용합니다.
-- `username/password` 로그인과 CDN manifest/key/segment 다운로드는 직접 연결입니다. 구독플러스는 로컬 HLS 프록시가 인증 쿠키를 붙여 CDN에 직접 연결합니다.
-- 일반 방송의 ffmpeg 입력에는 SOOP 플레이어의 `User-Agent`/`Origin`/`Referer` 헤더를 전달합니다. 국내 CDN은 이 헤더가 없으면 정상 재생 토큰도 HTTP 403으로 거절할 수 있습니다.
-- 일반 방송의 Streamlink는 앱에 포함된 요청 분리 플러그인을 사용하며, 사용자 Streamlink 설정·플러그인과 환경변수 프록시는 사용하지 않습니다.
+### 채널
 
-## output_template 변수
+`/channels`의 `채널` 탭에서 설정합니다.
 
-`/channels`에서 채널별 `output_template`에 아래 변수를 사용할 수 있습니다.
+| 항목 | 용도 |
+| --- | --- |
+| SOOP ID (`user_id`) | 녹화할 채널 ID |
+| 이름 (`display_name`) | UI와 파일명에 사용할 표시 이름 |
+| 활성화 (`enabled`) | 자동 녹화 여부 |
+| 화질 (`preferred_quality`) | 기본값 `best`, 특정 화질 예시 `1080p` |
+| 방송 비밀번호 (`stream_password`) | 비밀번호 방송에 필요한 값. 평문으로 저장하며 UI/API에서 조회·편집 가능 |
+| 구독플러스 건너뛰기 (`skip_subscription_plus`) | 구독플러스로 감지된 방송의 자동 녹화를 건너뜀. 수동 시작·재시도에는 적용하지 않음 |
+| 파일명 템플릿 (`output_template`) | 아래의 파일명·출력 설정 참고 |
 
-- `${displayName}`: 채널 표시 이름(없으면 `user_id`)
-- `${userId}`: SOOP `user_id`
-- `${title}`: 방송 제목
-- `${broadNo}`: 방송 번호
-- `${YY}`: 방송 시작 시각 기준 연도 2자리(`yy`)
-- `${MM}`: 방송 시작 시각 기준 월 2자리(`MM`)
-- `${DD}`: 방송 시작 시각 기준 일 2자리(`dd`)
-- `${HH}`: 방송 시작 시각 기준 시 2자리(`HH`)
-- `${mm}`: 방송 시작 시각 기준 분 2자리(`mm`)
-- `${ss}`: 방송 시작 시각 기준 초 2자리(`ss`)
-- 최종 파일 경로가 이미 있으면 자동으로 ` (1)`, ` (2)` 접미사를 붙여 다른 파일명으로 저장합니다.
-- 여러 remux가 동시에 같은 파일명을 선택해도 기존 파일을 덮어쓰지 않습니다.
+화질은 방송과 SOOP가 제공하는 스트림에 따라 달라집니다. 설정한 화질 이름만으로 실제 녹화 해상도가 보장되지는 않습니다.
 
-예시:
+### 인증
+
+`인증` 탭에 SOOP `username/password` 또는 브라우저에서 내보낸 `cookies.txt` 경로를 저장합니다. 구독플러스에는 해당 방송을 시청할 권한이 있는 계정이 필요합니다.
+
+- 로그인 비밀번호 저장 전에 `APP_SECRET_KEY`를 설정해야 합니다. 비밀번호는 암호화 저장되며 조회 시 원문을 반환하지 않습니다. 키를 바꾸거나 잃으면 저장된 비밀번호를 사용할 수 없으므로 다시 저장해야 합니다.
+- 비밀번호 입력란을 비우면 기존 값이 유지됩니다. 삭제하려면 `저장된 password 삭제`를 선택합니다.
+- `cookies.txt`는 Netscape 형식을 지원합니다. 앱에서 읽을 수 있는 경로를 지정하세요. 예를 들어 호스트의 `data/cookies/cookies.txt`는 Docker에서 `/workspace/data/cookies/cookies.txt`로 설정합니다.
+- 구독플러스는 쿠키를 먼저 사용하고, 쿠키가 없거나 권한 확인에 실패하면 저장된 계정으로 로그인을 재시도합니다. 인증 실패 시 최근 이벤트와 계정의 시청 권한·쿠키 만료 여부를 확인하세요.
+
+### 프록시
+
+`프록시` 탭에 URL을 저장합니다. 예: `http://user:pass@proxy-host:3128`. 비워서 저장하면 사용하지 않습니다. 설정은 DB에 저장되며 `.env`의 프록시 환경변수로 지정하지 않습니다.
+
+프록시는 일반 방송의 재생 토큰 발급과 구독플러스의 재생 정보·CDN 인증 갱신에 사용합니다. SOOP 계정 로그인과 영상 다운로드는 직접 연결하므로, 모든 트래픽을 프록시로 보내는 설정은 아닙니다. 인증 정보의 예약 문자는 저장 시 URL 인코딩으로 정규화합니다.
+
+## 파일명·출력 설정
+
+`output_template`은 `data/recordings` 아래의 상대 경로와 파일명을 지정합니다. 비우면 다음 기본 템플릿을 사용합니다.
 
 ```text
 ${displayName}/${YY}${MM}${DD} ${title} [${broadNo}].mp4
 ```
 
-## 운영/자동화 API
+| 변수 | 값 |
+| --- | --- |
+| `${displayName}` | 채널 표시 이름, 없으면 SOOP ID |
+| `${userId}` | SOOP ID |
+| `${title}` | 방송 제목 |
+| `${broadNo}` | 방송 번호 |
+| `${YY}` | 연도 2자리 |
+| `${MM}` | 월 2자리 |
+| `${DD}` | 일 2자리 |
+| `${HH}` | 시 2자리, 24시간제 |
+| `${mm}` | 분 2자리 |
+| `${ss}` | 초 2자리 |
 
-JSON API를 통해 UI 없이도 채널/설정/상태를 자동화할 수 있습니다.
+날짜·시간은 방송 시작 시각을 `TZ`로 변환해 사용하며, 시작 시각을 읽지 못하면 녹화 시작 준비 시각을 사용합니다. `${MM}`과 `${mm}`은 대소문자를 구분합니다. 파일명에 사용할 수 없는 문자는 정리하고, 확장자는 `.mp4`로 맞춥니다.
 
-- 시스템
-  - `GET /api/system/health`
-  - `GET /api/system/status`
-  - `GET /api/system/stream` (SSE)
-- 채널
-  - `GET /api/channels`
-  - `GET /api/channels/{channel_id}`
-  - `POST /api/channels`
-  - `PUT /api/channels/{channel_id}`
-  - `DELETE /api/channels/{channel_id}`
-- 녹화/이벤트 조회
-  - `GET /api/recordings?limit=20`
-  - `GET /api/events?limit=50`
-- 설정
-  - `GET /api/settings` (저장된 인증/프록시 설정 조회)
-  - `GET /api/settings/auth`
-  - `PUT /api/settings/auth`
-  - `GET /api/settings/proxy`
-  - `PUT /api/settings/proxy`
+같은 파일명이 이미 있으면 ` (1)`, ` (2)` 등의 접미사를 붙입니다. 동시 저장에서도 기존 녹화 파일을 덮어쓰지 않습니다. 방송이 끊겼다가 다시 녹화되면 같은 방송 번호라도 여러 파일로 저장될 수 있습니다.
 
-진행 중인 녹화 또는 remux가 있는 채널 삭제 요청은 `409 Conflict`로 거부됩니다.
+### 데이터 위치와 환경변수
 
-## 강제 종료 후 자동 복구
+데이터 경로는 저장소 루트에서 실행할 때 다음과 같습니다. 앱이 필요한 디렉터리를 생성합니다.
 
-- 앱 시작 시 이전 실행에서 `starting`, `recording`, `stopping`, `remuxing` 상태로 남은 녹화 이력을 `interrupted`로 정리합니다.
-- 새로 중단 처리했거나 이전 시작에서 이미 `interrupted`였던 이력의 `temp_path`와 `final_path`가 기록되어 있고 임시 파일이 0바이트보다 크면, 순차 백그라운드 작업으로 `ffmpeg -c copy` remux를 다시 시도합니다.
-- 복구 성공 시 이력을 `completed`로 변경하고 사용한 임시 파일을 삭제합니다.
-- 복구 실패 시 데이터가 남은 파일은 `partial`과 `temp_path`에 보존하고, 복구 가능한 파일이 없으면 `failed`로 기록합니다.
-- 자동 복구는 라이브 폴링과 새 녹화 시작을 막지 않습니다. 같은 방송이 계속 중이면 복구 중에도 별도 녹화 세션을 시작할 수 있습니다.
-- DB 녹화 이력에 연결되지 않은 파일과 0바이트 파일은 자동으로 처리하거나 삭제하지 않습니다.
-- 강제 종료 전에 디스크에 기록된 구간만 복구할 수 있으며, 종료 이후 누락된 구간은 복원할 수 없습니다.
+| 경로 | 내용 |
+| --- | --- |
+| `data/app.db` | 채널·인증·프록시 설정과 녹화 이력 |
+| `data/recordings` | 완성된 녹화 파일 |
+| `data/tmp` | 녹화·파일 정리 중 임시 파일과 복구용 파일 |
+| `data/cookies` | 쿠키 파일을 둘 수 있는 디렉터리 |
+| `data/logs/events.jsonl` | 이벤트 로그 |
 
-간단한 사용 예시:
+이 경로들은 [app/config.py](app/config.py)에 고정되어 있으며 환경변수로 변경하지 않습니다. 로컬 실행에서 조정할 수 있는 값은 [.env.example](.env.example)을 참고하세요.
+
+| 환경변수 | 용도 |
+| --- | --- |
+| `HOST`, `PORT` | 서버 수신 주소와 포트 |
+| `TZ` | UI·파일명에 사용할 시간대 |
+| `POLL_INTERVAL_SEC` | 전체 채널에 적용할 방송 확인 간격(초) |
+| `OFFLINE_CONFIRM_COUNT` | 녹화 종료 전에 필요한 연속 오프라인 확인 횟수 |
+| `FFMPEG_BINARY` | ffmpeg 실행 파일 이름 또는 경로 |
+| `APP_SECRET_KEY` | 저장된 SOOP 로그인 비밀번호의 암호화 키 |
+
+Windows 등에서 시간대 DB가 없어도 기본 `Asia/Seoul`은 KST로 처리합니다. 다른 시간대 키를 찾지 못하면 UTC를 사용합니다.
+
+## 운영상 주의사항
+
+- 현재 관리 UI/API에는 별도의 관리자 로그인 보호가 없습니다. 신뢰할 수 있는 네트워크에서 사용하거나 외부 접근을 제한하세요.
+- 서버는 worker 1개로 실행합니다. 같은 데이터 디렉터리를 사용하는 앱을 여러 개 실행하지 마세요.
+- 방송 상태 조회에 일시적으로 실패해도 녹화를 즉시 종료하지 않습니다. 재생 URL을 아직 얻지 못한 방송은 대기 후 재시도합니다.
+- 녹화 중이거나 파일 정리 중인 채널은 삭제할 수 없습니다. 녹화 파일 자체는 채널 삭제나 이력 정리로 삭제되지 않습니다.
+- 임시 녹화와 MP4 정리에 필요한 여유 디스크 공간을 확보하세요. 종료 시 파일 정리가 끝날 시간을 주고, 실패한 임시 파일은 복구 가능 여부를 확인한 뒤 정리하세요.
+
+### 서버 재시작
+
+웹 UI의 `서버 재시작`은 앱 프로세스를 종료합니다. Compose의 재시작 정책은 앱을 다시 실행하지만, 로컬에서 직접 실행했다면 시작 명령을 다시 실행해야 합니다.
+
+녹화 중에는 강제 재시작 확인이 필요하며, 확인 후에는 녹화를 중단하고 파일 정리를 기다린 뒤 종료합니다. 녹화가 끝나고 파일 정리만 남아 있는 경우에도 완료를 기다립니다. Docker의 종료 유예 시간이 파일 정리보다 짧으면 비정상 종료될 수 있으므로, 긴 녹화를 운영할 때는 Compose의 `stop_grace_period`도 검토하세요.
+
+### 비정상 종료 후 복구
+
+재시작하면 이전 실행에서 중단된 녹화 중 DB에 임시·최종 경로가 기록되어 있고, 임시 파일이 존재하며 0바이트보다 큰 경우 MP4 정리를 자동으로 다시 시도합니다. 복구는 백그라운드에서 진행되어 새 방송 녹화를 막지 않습니다.
+
+성공하면 완성 파일을 저장하고 사용한 임시 파일을 정리합니다. 실패해도 데이터가 남아 있으면 파일과 복구 경로를 보존하며 이력/API의 `temp_path`와 이벤트 로그에서 확인할 수 있습니다. 이미 `partial`로 끝난 이력은 다음 시작 시 자동 재시도 대상이 아닙니다.
+
+DB 이력에 연결되지 않은 임시 파일과 0바이트 파일은 자동 처리·삭제하지 않습니다. 디스크에 기록된 구간만 복구할 수 있고, 녹화하지 못한 구간은 복원할 수 없습니다. 복구를 위해 DB와 임시 파일을 함께 보관하세요.
+
+### 보관 정책
+
+- 이벤트 로그는 30일 초과 또는 20,000줄 초과 내역을 자동 정리합니다.
+- 종료된 녹화 이력은 90일 초과 레코드를 DB에서 정리합니다. 실제 녹화 파일은 삭제하지 않으므로 별도로 보관·정리해야 합니다.
+
+## API
+
+API 목록, 요청·응답 스키마와 실행 예시는 실행 중인 서버의 Swagger UI (`/docs`)에서 확인합니다. JSON API로 채널·설정을 관리하고 상태·녹화 이력·이벤트를 조회할 수 있습니다.
+
+상태 조회 예시:
 
 ```bash
-# 현재 상태 확인
 curl http://127.0.0.1:8000/api/system/status
-
-# 채널 목록 조회
-curl http://127.0.0.1:8000/api/channels
-
-# 채널 추가
-curl -X POST http://127.0.0.1:8000/api/channels \
-  -H "Content-Type: application/json" \
-  -d '{"user_id":"dlsn9911","display_name":"제갈금자","enabled":true,"preferred_quality":"best"}'
 ```
 
-## 보관 정책
+동일한 SOOP ID를 중복 등록하거나 진행 중인 녹화·파일 정리가 있는 채널을 삭제하면 `409 Conflict`를 반환합니다. `/api/system/stream`은 대시보드 변경 알림을 제공하는 SSE입니다.
 
-- 이벤트 로그: `./data/logs/events.jsonl`(JSONL) 기준으로 30일 초과 또는 20,000줄 초과 내역을 자동 정리
-- 녹화 이력(`recordings`): 90일 초과 레코드를 DB에서 자동 정리 (실제 녹화 파일은 삭제하지 않음)
+## Development
 
-## 주요 환경변수
-
-기본값은 `.env.example` 참고.
-
-- `HOST`
-- `PORT`
-- `TZ`
-- `POLL_INTERVAL_SEC`
-- `OFFLINE_CONFIRM_COUNT`
-- `FFMPEG_BINARY`
-- `APP_SECRET_KEY`
-
-Docker bootstrap 변수(`BOOTSTRAP_REPO_URL`, `BOOTSTRAP_REPO_BRANCH`)는
-컨테이너 entrypoint 옵션이며, `docker-compose.yml`에서 기본값이 이미 설정되어 있습니다.
-
-## 개발 검증
+저장소 루트에서 개발 도구를 설치합니다.
 
 ```bash
-uv run ruff check .
-uv run python -m compileall app main.py
+uv sync --group dev
 ```
