@@ -21,6 +21,7 @@ from app.services.playback_url import build_playback_url
 from app.services.soop_subscription import (
     SubscriptionPlusHlsProxy,
     SubscriptionPlusResolveError,
+    build_soop_browser_headers,
     create_direct_soop_login_cookies,
     has_subscription_plus_hint,
     load_soop_cookie_file,
@@ -627,6 +628,11 @@ class RecorderManager:
             cmd = self._build_record_cmd(
                 input_url=stream_url,
                 temp_path=temp_path,
+                headers=(
+                    build_soop_browser_headers(user_id=user_id, broad_no=broad_no)
+                    if subscription_proxy is None
+                    else None
+                ),
             )
             process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -1221,6 +1227,10 @@ class RecorderManager:
     ) -> list[str]:
         cmd = [
             self.settings.streamlink_binary,
+            "--no-config",
+            "--no-plugin-sideloading",
+            "--plugin-dir",
+            str(Path(__file__).resolve().parents[1] / "streamlink_plugins"),
             *auth_args,
         ]
         if proxy_url:
@@ -1300,17 +1310,18 @@ class RecorderManager:
         *,
         input_url: str,
         temp_path: Path,
+        headers: dict[str, str] | None = None,
     ) -> list[str]:
-        return [
-            self.settings.ffmpeg_binary,
-            "-nostdin",
-            "-y",
-            "-i",
-            input_url,
-            "-c",
-            "copy",
-            str(temp_path),
-        ]
+        cmd = [self.settings.ffmpeg_binary, "-nostdin", "-y"]
+        if headers:
+            cmd.extend(
+                [
+                    "-headers",
+                    "".join(f"{name}: {value}\r\n" for name, value in headers.items()),
+                ]
+            )
+        cmd.extend(["-i", input_url, "-c", "copy", str(temp_path)])
+        return cmd
 
     async def _build_auth_args(
         self,
@@ -1353,12 +1364,12 @@ class RecorderManager:
                         broad_no,
                     )
             else:
-                args.extend(["--soop-username", username, "--soop-password", password])
+                args.extend(["--sooprec-username", username, "--sooprec-password", password])
                 auth_sources.append("streamlink_username_password")
 
         stream_password = str(channel.get("stream_password") or "").strip()
         if stream_password:
-            args.extend(["--soop-stream-password", stream_password])
+            args.extend(["--sooprec-stream-password", stream_password])
 
         if auth_sources:
             metadata["auth_sources"] = auth_sources

@@ -110,7 +110,12 @@ docker compose up -d
 - UI: `/channels`의 `프록시 설정` 폼
 - API: `GET /api/settings/proxy`, `PUT /api/settings/proxy`
 - 프록시 URL의 username/password에 포함된 예약 문자(`&`, `(`, `)`, `@` 등)는 저장 시 percent-encoding으로 정규화됩니다.
-- `username/password` 로그인은 프록시 없이 direct로 수행하고, 재생 URL 해석 요청에만 프록시를 적용합니다.
+- 일반 방송은 방송 정보 조회(`type=live`)와 CDN URL 할당을 직접 연결로 수행하고, 재생 토큰 발급(`type=aid`)에만 DB의 프록시를 적용합니다. 지역 제한 방송의 국내 정보 조회와 해외 토큰 발급을 분리합니다.
+- 국내에서 발급한 토큰은 화질이 `1080p`로 표시되어도 실제 영상이 540p일 수 있습니다. 해외 프록시로 토큰을 발급하면 실제 원본 화질을 받을 수 있으며, 제공 화질은 방송과 SOOP 정책에 따라 달라집니다.
+- 구독플러스는 방송 정보/재생 URL 해석과 CDN 인증·갱신에 프록시를 적용합니다.
+- `username/password` 로그인과 CDN manifest/key/segment 다운로드는 직접 연결입니다. 구독플러스는 로컬 HLS 프록시가 인증 쿠키를 붙여 CDN에 직접 연결합니다.
+- 일반 방송의 ffmpeg 입력에는 SOOP 플레이어의 `User-Agent`/`Origin`/`Referer` 헤더를 전달합니다. 국내 CDN은 이 헤더가 없으면 정상 재생 토큰도 HTTP 403으로 거절할 수 있습니다.
+- 일반 방송의 Streamlink는 앱에 포함된 요청 분리 플러그인을 사용하며, 사용자 Streamlink 설정·플러그인과 환경변수 프록시는 사용하지 않습니다.
 
 ## output_template 변수
 

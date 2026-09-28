@@ -17,6 +17,7 @@
 - `PROBE_ERROR`만으로 녹화를 즉시 중단하지 않는다.
 - 라이브 감지 후 `streamlink`/구독플러스 URL 해석 및 `ffmpeg` 시작은 채널별 백그라운드 task로 처리해 `broad` probe 순회를 막지 않으며, 시작 작업 동시성은 내부 semaphore로 제한한다.
 - `streamlink --stream-url` 해석은 45초 안에 끝나지 않으면 프로세스를 정리하고 `standby_no_stream`으로 전환해 다음 probe에서 재시도한다.
+- 일반 방송은 `app/streamlink_plugins/sooprec.py`가 내장 SOOP 플러그인을 상속해 해석한다. `--plugin-dir`로 로드하며 인증 옵션은 `--sooprec-*`를 사용한다. 사용자 Streamlink 설정/기본 sideload 플러그인은 끄고 HTTP 환경변수도 사용하지 않는다.
 - 녹화 세션 식별 키는 `recordings.id`다. 같은 `(userId, broadNo)`라도 끊김 후 재시작된 구간은 별도 녹화 세션으로 기록할 수 있다.
 - 최종 출력 파일명이 충돌하면 remux 단계에서 ` (1)`, ` (2)` 접미사를 붙여 저장하고, 동시 remux 경쟁 상황에서도 원자적으로 기존 파일을 덮어쓰지 않는다.
 - remux/이동 실패 시 0바이트 초과 tmp 파일이 남아 있으면 `partial`로 기록하고 `temp_path`를 복구 경로로 남긴다.
@@ -40,8 +41,11 @@
 - 구독플러스 referer/origin은 공식 플레이어 흐름에 맞춰 `https://play.sooplive.com/{userId}/{broadNo}` / `https://play.sooplive.com`을 사용한다.
 - 프록시 설정은 환경변수가 아니라 DB(`control_proxy_url`)로만 관리한다.
 - 프록시 URL의 username/password 예약 문자는 저장 시 percent-encoding으로 정규화한다.
-- 프록시는 `streamlink --stream-url` 또는 구독플러스 `player_live_api.php`/`broad_stream_assign.html`/`private_auth.php` 해석 및 갱신에만 적용한다. `username/password` 직접 로그인과 CDN manifest/key/segment 요청은 direct다.
-- 일반 방송에서 프록시를 쓰고 `username/password`가 저장돼 있으면 direct 로그인으로 만든 SOOP 쿠키를 `streamlink --http-cookie`에 주입하고, streamlink 자체 로그인 옵션은 넘기지 않는다.
+- 일반 방송은 방송 정보(`player_live_api.php type=live`)와 CDN URL 할당(`broad_stream_assign.html`)을 direct로 요청하고, AID 발급(`type=aid`)에만 DB 프록시를 적용한다. 각 해석은 별도 Streamlink 프로세스이며 AID 요청 종료/실패 시 프록시를 즉시 해제한다.
+- 일반 방송의 ffmpeg 입력에는 `build_soop_browser_headers`로 만든 SOOP `User-Agent`/`Origin`/`Referer`를 `-headers`로 전달한다. 국내 CDN은 URL/AID가 정상이어도 이 헤더가 없으면 HTTP 403을 반환할 수 있다.
+- 지역 제한은 해외 `type=live` 요청에서 거절될 수 있지만 `type=aid`는 성공할 수 있다. 국내 AID는 해외 CDN에서도 실제 540p일 수 있고, 해외 AID는 국내 CDN에서도 원본 화질을 받을 수 있다. CDN 호스트나 `VIEWPRESET`의 1080p 표기만으로 실제 화질을 판단하지 않는다.
+- 구독플러스는 기존대로 `player_live_api.php`/`broad_stream_assign.html`/`private_auth.php` 해석 및 갱신에 DB 프록시를 적용한다. 모든 `username/password` 로그인과 CDN manifest/key/segment 요청은 direct다.
+- 일반 방송에서 프록시를 쓰고 `username/password`가 저장돼 있으면 direct 로그인으로 만든 SOOP 쿠키를 `streamlink --http-cookie`에 주입하고, streamlink 자체 로그인 옵션은 넘기지 않는다. 프록시가 없을 때 `--sooprec-username/password` 로그인도 direct다.
 - PC 웹 HLS fallback에서 프록시를 쓰면 `gcp_cdn_subscribe` 경로가 반환되어 원본 1080 품질이 노출될 수 있다.
 - 수동 중단된 채널이 같은 `broadNo`로 계속 라이브 상태면 자동 녹화를 재시작하지 않고 `online` 상태를 유지한다(재시도/오프라인/새 방송 번호에서 해제).
 - 같은 내용의 연속 `PROBE_ERROR`는 복구 또는 오류 내용/상태 변경 전까지 이벤트 로그에 중복 기록하지 않는다.

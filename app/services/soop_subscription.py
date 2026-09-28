@@ -336,7 +336,7 @@ async def resolve_subscription_plus_stream(
     timeout_sec: float = 20.0,
 ) -> SubscriptionPlusStream | None:
     cookies = load_soop_cookie_file(cookies_txt_path)
-    headers = _build_browser_headers(user_id=user_id, broad_no=broad_no)
+    headers = build_soop_browser_headers(user_id=user_id, broad_no=broad_no)
     auth_source = "cookies_txt" if cookies else "none"
     login_attempted = False
 
@@ -675,7 +675,7 @@ async def create_direct_soop_login_cookies(
     return await _create_direct_login_cookies(
         username=username_value,
         password=password_value,
-        headers=_build_browser_headers(user_id=user_id, broad_no=broad_no),
+        headers=build_soop_browser_headers(user_id=user_id, broad_no=broad_no),
         timeout_sec=timeout_sec,
     )
 
@@ -988,7 +988,7 @@ async def _login(client: httpx.AsyncClient, *, username: str, password: str) -> 
     return _parse_int(data.get("RESULT")) == LOGIN_RESULT_OK if isinstance(data, dict) else False
 
 
-def _build_browser_headers(*, user_id: str, broad_no: int) -> dict[str, str]:
+def build_soop_browser_headers(*, user_id: str, broad_no: int) -> dict[str, str]:
     return {
         "User-Agent": USER_AGENT,
         "Origin": PLAYBACK_ORIGIN,
