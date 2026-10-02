@@ -1313,6 +1313,7 @@ class RecorderManager:
         headers: dict[str, str] | None = None,
     ) -> list[str]:
         cmd = [self.settings.ffmpeg_binary, "-nostdin", "-y"]
+        cmd.extend(["-rw_timeout", "30000000", "-seg_max_retry", "3"])
         if headers:
             cmd.extend(
                 [
