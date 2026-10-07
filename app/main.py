@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -22,6 +23,8 @@ async def lifespan(application: FastAPI):
     await run_blocking(initialize_database, settings)
     supervisor = Supervisor(settings)
 
+    application.state.stream_db_cursor = None
+    application.state.stream_db_cursor_lock = asyncio.Lock()
     application.state.settings = settings
     application.state.supervisor = supervisor
 

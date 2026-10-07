@@ -244,9 +244,19 @@ def update_recording_with_probe_payload(
     recording_id: int,
     payload: dict[str, Any],
 ) -> None:
-    update_recording_fields(
-        settings,
-        recording_id,
-        broad_title=str(payload.get("broadTitle") or ""),
-        broad_start_at=payload.get("broadStart"),
-    )
+    broad_title = str(payload.get("broadTitle") or "")
+    broad_start_at = payload.get("broadStart")
+    with connect(settings) as conn:
+        row = conn.execute(
+            "SELECT broad_title, broad_start_at FROM recordings WHERE id = ?", (recording_id,)
+        ).fetchone()
+        if row is None or (
+            row["broad_title"] == broad_title and row["broad_start_at"] == broad_start_at
+        ):
+            return
+        conn.execute(
+            "UPDATE recordings SET broad_title = ?, broad_start_at = ?, updated_at = ? "
+            "WHERE id = ?",
+            (broad_title, broad_start_at, now_utc().isoformat(), recording_id),
+        )
+        conn.commit()

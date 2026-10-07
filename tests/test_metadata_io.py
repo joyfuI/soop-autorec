@@ -166,6 +166,30 @@ def test_late_session_updates_do_not_overwrite_newer_state(tmp_path, monkeypatch
         status="stopping",
     )
     assert recording.get_recording_by_id(settings, first["id"])["status"] == "completed"
+    assert not channel.update_status_if_current_broadcast(
+        settings,
+        item["id"],
+        broad_no=1,
+        recording_id=first["id"],
+        last_status="recording",
+    )
+    recording.update_recording_fields(settings, second["id"], status="completed")
+    channel.update_probe_state(
+        settings,
+        item["id"],
+        last_status="offline",
+        last_broad_no=1,
+        last_probe_at=now_utc().isoformat(),
+        offline_streak=1,
+    )
+    assert not channel.update_status_if_current_broadcast(
+        settings,
+        item["id"],
+        broad_no=1,
+        recording_id=second["id"],
+        last_status="recording",
+    )
+    assert channel.get_channel(settings, item["id"])["last_status"] == "offline"
 
 
 @pytest.mark.asyncio

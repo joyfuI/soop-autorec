@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import shutil
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -625,12 +626,6 @@ class RecorderManager:
             )
 
         await run_blocking(
-            recording_model.update_recording_with_probe_payload,
-            self.settings,
-            recording_id,
-            payload,
-        )
-        await run_blocking(
             recording_model.update_recording_fields,
             self.settings,
             recording_id,
@@ -954,6 +949,7 @@ class RecorderManager:
             "copy",
             str(remux_temp_path),
         ]
+        remux_started_at = time.monotonic()
         try:
             process = await asyncio.create_subprocess_exec(
                 *ffmpeg_cmd,
@@ -976,6 +972,12 @@ class RecorderManager:
         except asyncio.CancelledError:
             await self._terminate_subprocess(process, grace_sec=RESOLVER_TERMINATE_GRACE_SEC)
             raise
+        logger.info(
+            "remux 종료: recording_id=%s elapsed=%.3fs exit_code=%s",
+            recording_id,
+            time.monotonic() - remux_started_at,
+            process.returncode,
+        )
         reason = "ffmpeg remux에 실패했습니다"
         ffmpeg_tail = self._tail_text((stderr_bytes or b"").decode("utf-8", errors="ignore"))
         if ffmpeg_tail:
@@ -1008,6 +1010,7 @@ class RecorderManager:
         ffmpeg_exit_code: int | None,
         error_message: str,
     ) -> tuple[bool, Path]:
+        finalize_started_at = time.monotonic()
         if ffmpeg_exit_code == 0 and self._is_nonempty_file(remux_output_path):
             try:
                 final_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1034,6 +1037,11 @@ class RecorderManager:
                             cleanup_path.unlink(missing_ok=True)
                         except OSError:
                             logger.warning("임시 파일 삭제에 실패했습니다: %s", cleanup_path)
+                    logger.info(
+                        "최종 저장·정리 완료: recording_id=%s elapsed=%.3fs",
+                        recording_id,
+                        time.monotonic() - finalize_started_at,
+                    )
                     return True, candidate
                 error_message = (
                     "remux 최종 출력 경로가 모두 사용 중이라 저장에 실패했습니다. "

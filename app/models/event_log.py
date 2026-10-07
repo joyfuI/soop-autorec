@@ -13,13 +13,17 @@ from app.utils.time import now_utc, to_timezone
 EVENT_LOG_RELATIVE_PATH = Path("logs/events.jsonl")
 EVENT_LOG_RETENTION_DAYS = 30
 EVENT_LOG_MAX_LINES = 20_000
+EVENT_LOG_RECENT_LIMIT = 500
 
 _EVENT_LOG_LOCK = threading.RLock()
 _EVENT_LOG_NEXT_ID: int | None = None
+_EVENT_LOG_RECENT: deque[dict[str, Any]] = deque(maxlen=EVENT_LOG_RECENT_LIMIT)
+_EVENT_LOG_CACHE_PATH: Path | None = None
+_EVENT_LOG_CACHE_CURSOR: tuple[int, int] | None = None
 
 
 def _event_log_path(settings: Settings) -> Path:
-    return Path(settings.db_path).parent / EVENT_LOG_RELATIVE_PATH
+    return (Path(settings.db_path).parent / EVENT_LOG_RELATIVE_PATH).absolute()
 
 
 def _serialize_payload(payload: dict[str, Any] | None) -> str | None:
@@ -34,7 +38,7 @@ def _normalize_event_record(record: Any) -> dict[str, Any] | None:
 
     try:
         event_id = int(record.get("id"))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
     created_at = str(record.get("created_at") or "").strip()
@@ -52,12 +56,12 @@ def _normalize_event_record(record: Any) -> dict[str, Any] | None:
 
     try:
         channel_id = int(channel_id_raw) if channel_id_raw is not None else None
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         channel_id = None
 
     try:
         recording_id = int(recording_id_raw) if recording_id_raw is not None else None
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         recording_id = None
 
     payload_json_raw = record.get("payload_json")
@@ -121,27 +125,39 @@ def _write_event_records(path: Path, records: list[dict[str, Any]]) -> None:
     tmp_path.replace(path)
 
 
-def _initialize_next_id(path: Path) -> None:
-    global _EVENT_LOG_NEXT_ID
-    if _EVENT_LOG_NEXT_ID is not None:
-        return
+def _file_cursor(path: Path) -> tuple[int, int]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return 0, 0
+    return stat.st_size, stat.st_mtime_ns
 
-    records = _read_event_records(path)
-    max_id = max((record["id"] for record in records), default=0)
-    _EVENT_LOG_NEXT_ID = max_id + 1
+
+def _cache_records(path: Path, records: list[dict[str, Any]]) -> None:
+    global _EVENT_LOG_NEXT_ID, _EVENT_LOG_CACHE_PATH, _EVENT_LOG_CACHE_CURSOR
+    if path != _EVENT_LOG_CACHE_PATH:
+        _EVENT_LOG_NEXT_ID = None
+    _EVENT_LOG_RECENT.clear()
+    _EVENT_LOG_RECENT.extend(records[-EVENT_LOG_RECENT_LIMIT:])
+    next_id = max((record["id"] for record in records), default=0) + 1
+    _EVENT_LOG_NEXT_ID = max(_EVENT_LOG_NEXT_ID or 1, next_id)
+    _EVENT_LOG_CACHE_PATH = path
+    _EVENT_LOG_CACHE_CURSOR = _file_cursor(path)
+
+
+def _refresh_recent_cache(path: Path) -> None:
+    if path != _EVENT_LOG_CACHE_PATH or _file_cursor(path) != _EVENT_LOG_CACHE_CURSOR:
+        _cache_records(path, _read_event_records(path))
 
 
 def cleanup_event_logs(settings: Settings) -> int:
-    global _EVENT_LOG_NEXT_ID
-
     cutoff = now_utc() - timedelta(days=EVENT_LOG_RETENTION_DAYS)
     path = _event_log_path(settings)
 
     with _EVENT_LOG_LOCK:
         records = _read_event_records(path)
         if not records:
-            if _EVENT_LOG_NEXT_ID is None:
-                _EVENT_LOG_NEXT_ID = 1
+            _cache_records(path, [])
             return 0
 
         kept: list[dict[str, Any]] = []
@@ -157,10 +173,7 @@ def cleanup_event_logs(settings: Settings) -> int:
         if removed_count > 0:
             _write_event_records(path, kept)
 
-        max_id = max((record["id"] for record in kept), default=0)
-        next_id = max_id + 1
-        if _EVENT_LOG_NEXT_ID is None or _EVENT_LOG_NEXT_ID < next_id:
-            _EVENT_LOG_NEXT_ID = next_id
+        _cache_records(path, kept)
 
         return removed_count
 
@@ -168,11 +181,7 @@ def cleanup_event_logs(settings: Settings) -> int:
 def get_event_log_cursor(settings: Settings) -> tuple[int, int]:
     path = _event_log_path(settings)
     with _EVENT_LOG_LOCK:
-        try:
-            stat = path.stat()
-        except OSError:
-            return 0, 0
-    return int(stat.st_size), int(stat.st_mtime_ns)
+        return _file_cursor(path)
 
 
 def add_event_log(
@@ -185,16 +194,15 @@ def add_event_log(
     recording_id: int | None = None,
     payload: dict[str, Any] | None = None,
 ) -> int:
-    global _EVENT_LOG_NEXT_ID
+    global _EVENT_LOG_NEXT_ID, _EVENT_LOG_CACHE_CURSOR
 
     timestamp = to_timezone(now_utc(), settings.timezone).isoformat(timespec="seconds")
     path = _event_log_path(settings)
 
     with _EVENT_LOG_LOCK:
         path.parent.mkdir(parents=True, exist_ok=True)
-        _initialize_next_id(path)
+        _refresh_recent_cache(path)
         next_id = _EVENT_LOG_NEXT_ID or 1
-        _EVENT_LOG_NEXT_ID = next_id + 1
 
         record = {
             "id": next_id,
@@ -209,6 +217,11 @@ def add_event_log(
         with path.open("a", encoding="utf-8") as fp:
             fp.write(json.dumps(record, ensure_ascii=False))
             fp.write("\n")
+        _EVENT_LOG_NEXT_ID = next_id + 1
+        normalized = _normalize_event_record(record)
+        if normalized is not None:
+            _EVENT_LOG_RECENT.append(normalized)
+        _EVENT_LOG_CACHE_CURSOR = _file_cursor(path)
 
     return next_id
 
@@ -218,21 +231,7 @@ def list_recent_event_logs(settings: Settings, *, limit: int = 50) -> list[dict[
     path = _event_log_path(settings)
 
     with _EVENT_LOG_LOCK:
-        if not path.exists():
-            return []
-
-        recent: deque[dict[str, Any]] = deque(maxlen=safe_limit)
-        with path.open("r", encoding="utf-8") as fp:
-            for line in fp:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    raw = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                record = _normalize_event_record(raw)
-                if record is not None:
-                    recent.append(record)
-
-        return list(reversed(list(recent)))
+        if safe_limit > EVENT_LOG_RECENT_LIMIT:
+            return list(reversed(_read_event_records(path)[-safe_limit:]))
+        _refresh_recent_cache(path)
+        return [dict(record) for record in list(reversed(_EVENT_LOG_RECENT))[:safe_limit]]

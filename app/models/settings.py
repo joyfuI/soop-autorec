@@ -63,9 +63,10 @@ def _apply_optional_setting(conn, key: str, value: str | None | object) -> None:
 
 
 def get_auth_settings(settings: Settings) -> dict[str, str | None | bool]:
-    username = get_setting(settings, SOOP_USERNAME_KEY)
-    stored_password = get_setting(settings, SOOP_PASSWORD_KEY)
-    cookies_txt_path = get_setting(settings, COOKIES_TXT_PATH_KEY)
+    values = list_settings(settings)
+    username = values.get(SOOP_USERNAME_KEY)
+    stored_password = values.get(SOOP_PASSWORD_KEY)
+    cookies_txt_path = values.get(COOKIES_TXT_PATH_KEY)
 
     return {
         "username": username,
@@ -75,9 +76,10 @@ def get_auth_settings(settings: Settings) -> dict[str, str | None | bool]:
 
 
 def get_auth_credentials(settings: Settings) -> dict[str, str | None]:
-    username = get_setting(settings, SOOP_USERNAME_KEY)
-    stored_password = get_setting(settings, SOOP_PASSWORD_KEY)
-    cookies_txt_path = get_setting(settings, COOKIES_TXT_PATH_KEY)
+    values = list_settings(settings)
+    username = values.get(SOOP_USERNAME_KEY)
+    stored_password = values.get(SOOP_PASSWORD_KEY)
+    cookies_txt_path = values.get(COOKIES_TXT_PATH_KEY)
 
     password: str | None = None
     if stored_password:

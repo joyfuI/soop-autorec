@@ -260,6 +260,7 @@ class Supervisor:
                 self.settings,
                 channel_id,
                 broad_no=broad_no,
+                recording_id=recording_id,
                 last_status=next_status,
                 last_error=ensure_result.error,
             )
@@ -284,6 +285,7 @@ class Supervisor:
                 self.settings,
                 channel_id,
                 broad_no=broad_no,
+                recording_id=recording_id,
                 last_status="error",
                 last_error=error_message,
             )

@@ -13,7 +13,6 @@ from app.config import Settings
 from app.db import connect, database_ping
 from app.models import event_log as event_log_model
 from app.services.health import build_health_report
-from app.services.poller import SupervisorState
 from app.utils.asyncio import run_blocking
 from app.utils.time import now_utc
 
@@ -37,14 +36,13 @@ async def api_health(request: Request) -> dict:
 
 @router.get("/status")
 async def api_status(request: Request) -> dict:
-    settings = request.app.state.settings
     state = request.app.state.supervisor.state
     (
         event_log_size,
         event_log_mtime_ns,
         recording_max_id,
         channel_dashboard_cursor,
-    ) = await run_blocking(_fetch_stream_db_cursor, settings)
+    ) = await _get_stream_db_cursor(request)
     return {
         "running": state.running,
         "iteration_count": state.iteration_count,
@@ -112,30 +110,30 @@ def _build_channel_dashboard_cursor(channel_rows) -> str:
     return hasher.hexdigest()
 
 
-def _build_stream_state_key(settings: Settings, state: SupervisorState) -> tuple:
-    (
-        event_log_size,
-        event_log_mtime_ns,
-        recording_max_id,
-        channel_dashboard_cursor,
-    ) = _fetch_stream_db_cursor(settings)
-    return (
-        state.active_recorder_count,
-        event_log_size,
-        event_log_mtime_ns,
-        recording_max_id,
-        channel_dashboard_cursor,
-    )
+async def _get_stream_db_cursor(request: Request) -> tuple[int, int, int, str]:
+    app_state = request.app.state
+    cached = app_state.stream_db_cursor
+    if cached is not None and time.monotonic() < cached[0]:
+        return cached[1]
+    async with app_state.stream_db_cursor_lock:
+        cached = app_state.stream_db_cursor
+        if cached is None or time.monotonic() >= cached[0]:
+            cursor = await run_blocking(_fetch_stream_db_cursor, app_state.settings)
+            cached = (time.monotonic() + STREAM_POLL_INTERVAL_SEC, cursor)
+            app_state.stream_db_cursor = cached
+        return cached[1]
+
+
+async def _build_stream_state_key(request: Request) -> tuple:
+    cursor = await _get_stream_db_cursor(request)
+    return (request.app.state.supervisor.state.active_recorder_count, *cursor)
 
 
 @router.get("/stream")
 async def api_stream(request: Request) -> StreamingResponse:
-    settings = request.app.state.settings
-    state = request.app.state.supervisor.state
-
     async def event_generator():
         try:
-            last_state_key = await run_blocking(_build_stream_state_key, settings, state)
+            last_state_key = await _build_stream_state_key(request)
         except Exception:  # pragma: no cover
             logger.exception("Failed to build initial stream state key.")
             last_state_key = None
@@ -149,7 +147,7 @@ async def api_stream(request: Request) -> StreamingResponse:
             await asyncio.sleep(STREAM_POLL_INTERVAL_SEC)
 
             try:
-                state_key = await run_blocking(_build_stream_state_key, settings, state)
+                state_key = await _build_stream_state_key(request)
             except Exception:  # pragma: no cover
                 logger.exception("Failed to build stream state key.")
                 continue

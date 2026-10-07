@@ -215,6 +215,7 @@ def update_status_if_current_broadcast(
     channel_id: int,
     *,
     broad_no: int,
+    recording_id: int,
     last_status: str,
     last_error: str | None | object = _UNSET,
 ) -> bool:
@@ -226,7 +227,7 @@ def update_status_if_current_broadcast(
         set_parts.append("last_error = ?")
         values.append(last_error)
 
-    values.extend([channel_id, broad_no])
+    values.extend([channel_id, broad_no, recording_id, last_status, last_status, recording_id])
 
     with connect(settings) as conn:
         cursor = conn.execute(
@@ -235,6 +236,14 @@ def update_status_if_current_broadcast(
             SET {", ".join(set_parts)}
             WHERE id = ?
               AND last_broad_no = ?
+              AND EXISTS (
+                SELECT 1 FROM recordings
+                WHERE id = ? AND channel_id = channels.id
+                  AND (? NOT IN ('recording', 'starting', 'standby_no_stream') OR status = ?)
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM recordings WHERE channel_id = channels.id AND id > ?
+              )
             """,
             values,
         )
