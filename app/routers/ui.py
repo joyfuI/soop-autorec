@@ -16,6 +16,7 @@ from app.models import dashboard as dashboard_model
 from app.models import event_log as event_log_model
 from app.models import recording as recording_model
 from app.models import settings as settings_model
+from app.utils.asyncio import run_blocking
 from app.utils.time import format_datetime_for_display, format_datetime_iso_offset
 
 templates = Jinja2Templates(directory="app/templates")
@@ -100,9 +101,9 @@ async def dashboard(
     settings = request.app.state.settings
     supervisor_state = request.app.state.supervisor.state
 
-    summary = dashboard_model.fetch_dashboard_summary(settings)
-    channels = channel_model.list_channels(settings)
-    recent_events = event_log_model.list_recent_event_logs(settings, limit=12)
+    summary = await run_blocking(dashboard_model.fetch_dashboard_summary, settings)
+    channels = await run_blocking(channel_model.list_channels, settings)
+    recent_events = await run_blocking(event_log_model.list_recent_event_logs, settings, limit=12)
     channel_name_by_id = {
         int(channel["id"]): str(channel.get("display_name") or channel.get("user_id") or "")
         for channel in channels
@@ -111,7 +112,7 @@ async def dashboard(
         channel_id = event.get("channel_id")
         try:
             normalized_channel_id = int(channel_id) if channel_id is not None else None
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             normalized_channel_id = None
 
         event["channel_name"] = (
@@ -134,10 +135,13 @@ async def dashboard(
                 reason_text = str(reason_raw).strip()
                 reason = reason_text or None
         event["reason_label"] = STOP_REASON_LABELS.get(reason, reason) if reason else None
-    recent_recordings = recording_model.list_recent_recordings(settings, limit=12)
+    recent_recordings = await run_blocking(
+        recording_model.list_recent_recordings, settings, limit=12
+    )
     active_recorder_count = request.app.state.supervisor.recorder.active_count
 
-    return templates.TemplateResponse(
+    return await run_blocking(
+        templates.TemplateResponse,
         request=request,
         name="index.html",
         context={
@@ -162,12 +166,13 @@ async def channels_page(
     error: str | None = None,
 ) -> HTMLResponse:
     settings = request.app.state.settings
-    channels = channel_model.list_channels(settings)
-    auth_settings = settings_model.get_auth_settings(settings)
-    proxy_settings = settings_model.get_proxy_settings(settings)
+    channels = await run_blocking(channel_model.list_channels, settings)
+    auth_settings = await run_blocking(settings_model.get_auth_settings, settings)
+    proxy_settings = await run_blocking(settings_model.get_proxy_settings, settings)
     active_recorder_count = request.app.state.supervisor.recorder.active_count
 
-    return templates.TemplateResponse(
+    return await run_blocking(
+        templates.TemplateResponse,
         request=request,
         name="channels.html",
         context={
@@ -188,7 +193,7 @@ async def stop_dashboard_channel_recording(
     channel_id: int,
 ) -> RedirectResponse:
     settings = request.app.state.settings
-    channel = channel_model.get_channel(settings, channel_id)
+    channel = await run_blocking(channel_model.get_channel, settings, channel_id)
     if channel is None:
         return _build_redirect("/", error="채널을 찾을 수 없습니다.")
 
@@ -205,15 +210,17 @@ async def stop_dashboard_channel_recording(
     broad_no_raw = channel.get("last_broad_no")
     try:
         hold_broad_no = int(broad_no_raw) if broad_no_raw is not None else None
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         hold_broad_no = None
 
     if hold_broad_no is None:
-        active_recording = recording_model.get_active_recording_for_channel(settings, channel_id)
+        active_recording = await run_blocking(
+            recording_model.get_active_recording_for_channel, settings, channel_id
+        )
         if active_recording is not None:
             try:
                 hold_broad_no = int(active_recording.get("broad_no"))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 hold_broad_no = None
 
     request.app.state.supervisor.hold_manual_stop_for_broadcast(
@@ -233,7 +240,7 @@ async def retry_dashboard_channel(
     channel_id: int,
 ) -> RedirectResponse:
     settings = request.app.state.settings
-    channel = channel_model.get_channel(settings, channel_id)
+    channel = await run_blocking(channel_model.get_channel, settings, channel_id)
     if channel is None:
         return _build_redirect("/", error="채널을 찾을 수 없습니다.")
 
@@ -274,7 +281,8 @@ async def create_channel(
     try:
         stream_password_value = stream_password.strip() or None
 
-        channel_model.create_channel(
+        await run_blocking(
+            channel_model.create_channel,
             settings,
             user_id=normalized_user_id,
             display_name=display_name.strip() or None,
@@ -307,14 +315,15 @@ async def update_channel(
 ) -> RedirectResponse:
     settings = request.app.state.settings
     tab_key = _resolve_channel_tab(tab) or "channel"
-    channel = channel_model.get_channel(settings, channel_id)
+    channel = await run_blocking(channel_model.get_channel, settings, channel_id)
     if channel is None:
         return _build_redirect("/channels", error="채널을 찾을 수 없습니다.", tab=tab_key)
 
     stream_password_value = stream_password.strip() or None
     next_enabled = bool(channel["enabled"]) if enabled is None else enabled == "on"
 
-    updated = channel_model.update_channel(
+    updated = await run_blocking(
+        channel_model.update_channel,
         settings,
         channel_id,
         display_name=display_name.strip() or None,
@@ -342,12 +351,13 @@ async def toggle_channel(
 ) -> RedirectResponse:
     settings = request.app.state.settings
     tab_key = _resolve_channel_tab(tab) or "channel"
-    channel = channel_model.get_channel(settings, channel_id)
+    channel = await run_blocking(channel_model.get_channel, settings, channel_id)
     if channel is None:
         return _build_redirect("/channels", error="채널을 찾을 수 없습니다.", tab=tab_key)
 
     next_enabled = not bool(channel["enabled"])
-    channel_model.update_channel(
+    await run_blocking(
+        channel_model.update_channel,
         settings,
         channel_id,
         display_name=channel["display_name"],
@@ -374,11 +384,13 @@ async def delete_channel(
 ) -> RedirectResponse:
     settings = request.app.state.settings
     tab_key = _resolve_channel_tab(tab) or "channel"
-    channel = channel_model.get_channel(settings, channel_id)
+    channel = await run_blocking(channel_model.get_channel, settings, channel_id)
     if channel is None:
         return _build_redirect("/channels", error="채널을 찾을 수 없습니다.", tab=tab_key)
 
-    active_recording = recording_model.get_active_recording_for_channel(settings, channel_id)
+    active_recording = await run_blocking(
+        recording_model.get_active_recording_for_channel, settings, channel_id
+    )
     if active_recording is not None:
         return _build_redirect(
             "/channels",
@@ -386,7 +398,10 @@ async def delete_channel(
             tab=tab_key,
         )
 
-    channel_model.delete_channel(settings, channel_id)
+    try:
+        await run_blocking(channel_model.delete_channel, settings, channel_id)
+    except ValueError as exc:
+        return _build_redirect("/channels", error=str(exc), tab=tab_key)
     return _build_redirect(
         "/channels",
         message=f"채널을 삭제했습니다: {channel['user_id']}",
@@ -407,7 +422,8 @@ async def update_auth_settings(
     tab_key = _resolve_channel_tab(tab) or "auth"
 
     try:
-        settings_model.update_auth_settings(
+        await run_blocking(
+            settings_model.update_auth_settings,
             settings,
             username=username,
             password=password if password.strip() else None,
@@ -429,7 +445,7 @@ async def update_proxy_settings(
     settings = request.app.state.settings
     tab_key = _resolve_channel_tab(tab) or "proxy"
     try:
-        settings_model.update_proxy_settings(settings, proxy_url=proxy_url)
+        await run_blocking(settings_model.update_proxy_settings, settings, proxy_url=proxy_url)
     except ValueError as exc:
         return _build_redirect("/channels", error=str(exc), tab=tab_key)
     return _build_redirect("/channels", message="프록시 설정을 저장했습니다.", tab=tab_key)
@@ -496,4 +512,3 @@ async def restart_system(
         message="재시작을 요청했습니다. 잠시 후 다시 접속해주세요.",
         tab=tab_key,
     )
-

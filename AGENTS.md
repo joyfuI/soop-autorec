@@ -59,6 +59,7 @@ SOOP endpoint·인증 단계·timeout·갱신 간격은 해당 서비스 코드�
 - 녹화 시작·종료·remux·복구의 수명은 lifespan의 supervisor/recorder가 관리한다. HTTP handler는 요청을 전달하며 장시간 작업을 독립적으로 소유하지 않는다. UI 재시작에서 녹화·remux 정리가 필요할 때도 background task가 supervisor 종료를 기다린다.
 - URL 해석·프로세스 시작은 채널별 task와 제한된 동시성으로 처리해 probe 순회를 막지 않는다. 종료 시 시작 task 취소와 자식 프로세스 정리를 보존한다.
 - worker는 1개를 유지한다. supervisor·녹화 handle·JSONL 잠금은 프로세스 로컬 상태이며, 여러 worker는 중복 폴링·녹화와 SQLite 쓰기 경합을 유발할 수 있다.
+- DB·JSONL·쿠키·파일의 동기 I/O와 잠금 대기는 이벤트 루프 밖에서 처리한다. SQLite 연결은 해당 작업 스레드 안에서 열고 닫으며, 방송·handle·task 상태는 이벤트 루프에서 관리한다. 보관 정리는 supervisor가 추적하고 종료 시 완료를 기다린다.
 - 대시보드는 SSE로 갱신하지만 채널 관리 페이지는 입력 중 자동 새로고침하지 않는다. 탭 상태는 URL hash와 폼의 hidden `tab`으로 유지한다.
 - UI 재시작은 프로세스 종료다. 녹화 중에는 명시적인 강제 확인이 필요하고, 강제 재시작이나 remux만 남은 재시작은 supervisor 정리를 기다린 뒤 종료한다. 활성 녹화 수와 remux 수를 같은 지표로 취급하지 않는다.
 

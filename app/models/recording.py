@@ -150,6 +150,8 @@ def create_or_get_recording_for_live(
 def update_recording_fields(
     settings: Settings,
     recording_id: int,
+    *,
+    only_statuses: tuple[str, ...] | None = None,
     **fields: Any,
 ) -> None:
     if not fields:
@@ -172,6 +174,9 @@ def update_recording_fields(
     values.append(recording_id)
 
     sql = f"UPDATE recordings SET {', '.join(set_parts)} WHERE id = ?"
+    if only_statuses is not None:
+        sql += f" AND status IN ({', '.join('?' for _ in only_statuses)})"
+        values.extend(only_statuses)
 
     with connect(settings) as conn:
         conn.execute(sql, values)

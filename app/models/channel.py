@@ -1,9 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any
 
 from app.config import Settings
 from app.db import connect
+from app.models.recording import ACTIVE_RECORDING_STATUSES
 from app.utils.time import now_utc
 
 CHANNEL_COLUMNS = (
@@ -141,6 +142,14 @@ def update_channel(
 
 def delete_channel(settings: Settings, channel_id: int) -> bool:
     with connect(settings) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        placeholders = ", ".join("?" for _ in ACTIVE_RECORDING_STATUSES)
+        active = conn.execute(
+            f"SELECT 1 FROM recordings WHERE channel_id = ? AND status IN ({placeholders}) LIMIT 1",
+            (channel_id, *ACTIVE_RECORDING_STATUSES),
+        ).fetchone()
+        if active is not None:
+            raise ValueError("진행 중인 녹화 또는 remux가 있어 채널을 삭제할 수 없습니다.")
         cursor = conn.execute("DELETE FROM channels WHERE id = ?", (channel_id,))
         conn.commit()
 
@@ -223,7 +232,7 @@ def update_status_if_current_broadcast(
         cursor = conn.execute(
             f"""
             UPDATE channels
-            SET {', '.join(set_parts)}
+            SET {", ".join(set_parts)}
             WHERE id = ?
               AND last_broad_no = ?
             """,
@@ -239,6 +248,7 @@ def mark_recording_error_if_current_broadcast(
     channel_id: int,
     *,
     broad_no: int,
+    recording_id: int,
     last_error: str,
 ) -> bool:
     timestamp = now_utc().isoformat()
@@ -252,6 +262,10 @@ def mark_recording_error_if_current_broadcast(
               updated_at = ?
             WHERE id = ?
               AND last_broad_no = ?
+              AND NOT EXISTS (
+                SELECT 1 FROM recordings
+                WHERE channel_id = channels.id AND id > ?
+              )
               AND last_status IN (
                 'recording',
                 'stopping',
@@ -260,9 +274,8 @@ def mark_recording_error_if_current_broadcast(
                 'error'
               )
             """,
-            (last_error, timestamp, channel_id, broad_no),
+            (last_error, timestamp, channel_id, broad_no, recording_id),
         )
         conn.commit()
 
     return cursor.rowcount > 0
-

@@ -149,7 +149,8 @@ class RecorderManager:
 
         existing_result = await self.get_existing_recording_result(recording=recording)
         if existing_result is not None:
-            recording_model.update_recording_with_probe_payload(
+            await run_blocking(
+                recording_model.update_recording_with_probe_payload,
                 self.settings,
                 existing_result.recording_id,
                 payload,
@@ -197,7 +198,7 @@ class RecorderManager:
                 continue
 
             temp_path = Path(temp_path_raw)
-            if not self._is_nonempty_file(temp_path):
+            if not await run_blocking(self._is_nonempty_file, temp_path):
                 continue
 
             recording_id = int(recording["id"])
@@ -211,7 +212,8 @@ class RecorderManager:
                 ),
                 final_path=Path(final_path_raw),
             )
-            recording_model.update_recording_fields(
+            await run_blocking(
+                recording_model.update_recording_fields,
                 self.settings,
                 recording_id,
                 status="remuxing",
@@ -255,25 +257,30 @@ class RecorderManager:
                         "Interrupted recording recovery failed for recording_id=%s",
                         recovery.recording_id,
                     )
-                    recovery_path = self._resolve_recovery_path(
+                    recovery_path = await run_blocking(
+                        self._resolve_recovery_path,
                         remux_output_path=recovery.remux_temp_path,
                         temp_path=recovery.temp_path,
                     )
-                    recording_model.update_recording_fields(
+                    await run_blocking(
+                        recording_model.update_recording_fields,
                         self.settings,
                         recovery.recording_id,
                         status="partial" if recovery_path is not None else "failed",
                         temp_path=str(recovery_path) if recovery_path is not None else None,
                         file_size_bytes=(
-                            recovery_path.stat().st_size if recovery_path is not None else None
+                            (await run_blocking(recovery_path.stat)).st_size
+                            if recovery_path is not None
+                            else None
                         ),
                         error_message=f"중단 녹화 자동 복구 중 오류가 발생했습니다: {exc}",
                     )
-                    self._log_interrupted_recording_recovery_failure(recovery)
+                    await run_blocking(self._log_interrupted_recording_recovery_failure, recovery)
                     continue
 
                 if remux_result:
-                    event_log_model.add_event_log(
+                    await run_blocking(
+                        event_log_model.add_event_log,
                         self.settings,
                         level="info",
                         event_type="record_recovered",
@@ -286,7 +293,7 @@ class RecorderManager:
                         payload={"final_path": str(resolved_final_path)},
                     )
                 else:
-                    self._log_interrupted_recording_recovery_failure(recovery)
+                    await run_blocking(self._log_interrupted_recording_recovery_failure, recovery)
             except Exception:  # pragma: no cover - event/DB logging safety net
                 logger.exception(
                     "Interrupted recording recovery finalization failed for recording_id=%s",
@@ -354,12 +361,14 @@ class RecorderManager:
             if current is not None and current is not handle:
                 return
 
-            channel_model.mark_recording_error_if_current_broadcast(
-                self.settings,
-                handle.channel_id,
-                broad_no=handle.broad_no,
-                last_error=error_message,
-            )
+        await run_blocking(
+            channel_model.mark_recording_error_if_current_broadcast,
+            self.settings,
+            handle.channel_id,
+            broad_no=handle.broad_no,
+            recording_id=handle.recording_id,
+            last_error=error_message,
+        )
 
     async def stop_recording(self, channel_id: int, *, reason: str) -> bool:
         async with self._lock:
@@ -374,13 +383,16 @@ class RecorderManager:
         handle.stop_requested = True
         handle.stop_reason = reason
 
-        recording_model.update_recording_fields(
+        await run_blocking(
+            recording_model.update_recording_fields,
             self.settings,
             handle.recording_id,
             status="stopping",
+            only_statuses=("starting", "recording"),
             error_message=None,
         )
-        event_log_model.add_event_log(
+        await run_blocking(
+            event_log_model.add_event_log,
             self.settings,
             level="info",
             event_type="record_stop_requested",
@@ -417,15 +429,17 @@ class RecorderManager:
         user_id = str(channel["user_id"])
         broad_no = int(recording["broad_no"])
 
-        binary_error = self._validate_binaries()
+        binary_error = await run_blocking(self._validate_binaries)
         if binary_error is not None:
-            recording_model.update_recording_fields(
+            await run_blocking(
+                recording_model.update_recording_fields,
                 self.settings,
                 recording_id,
                 status="failed",
                 error_message=binary_error,
             )
-            event_log_model.add_event_log(
+            await run_blocking(
+                event_log_model.add_event_log,
                 self.settings,
                 level="error",
                 event_type="record_start_failed",
@@ -444,13 +458,15 @@ class RecorderManager:
             playback_url = build_playback_url(user_id)
         except ValueError as exc:
             error_message = str(exc)
-            recording_model.update_recording_fields(
+            await run_blocking(
+                recording_model.update_recording_fields,
                 self.settings,
                 recording_id,
                 status="failed",
                 error_message=error_message,
             )
-            event_log_model.add_event_log(
+            await run_blocking(
+                event_log_model.add_event_log,
                 self.settings,
                 level="error",
                 event_type="record_start_failed",
@@ -479,10 +495,10 @@ class RecorderManager:
         )
 
         final_path = Path(self.settings.output_root_dir) / relative_output
-        final_path.parent.mkdir(parents=True, exist_ok=True)
+        await run_blocking(final_path.parent.mkdir, parents=True, exist_ok=True)
 
         temp_root = Path(self.settings.temp_root_dir)
-        temp_root.mkdir(parents=True, exist_ok=True)
+        await run_blocking(temp_root.mkdir, parents=True, exist_ok=True)
         temp_path = temp_root / self._build_temp_filename(
             user_id=user_id,
             broad_no=broad_no,
@@ -499,9 +515,9 @@ class RecorderManager:
         resolver_metadata: dict[str, Any] = {}
         subscription_proxy: SubscriptionPlusHlsProxy | None = None
         try:
-            proxy_settings = settings_model.get_proxy_settings(self.settings)
+            proxy_settings = await run_blocking(settings_model.get_proxy_settings, self.settings)
             resolver_proxy_url = str(proxy_settings.get("proxy_url") or "").strip() or None
-            auth = settings_model.get_auth_credentials(self.settings)
+            auth = await run_blocking(settings_model.get_auth_credentials, self.settings)
             subscription_stream = None
             if has_subscription_plus_hint(payload):
                 subscription_stream = await resolve_subscription_plus_stream(
@@ -545,13 +561,15 @@ class RecorderManager:
                 stream_url = await self._resolve_stream_url(resolve_cmd)
         except SubscriptionPlusResolveError as exc:
             error_message = str(exc)
-            recording_model.update_recording_fields(
+            await run_blocking(
+                recording_model.update_recording_fields,
                 self.settings,
                 recording_id,
                 status="failed",
                 error_message=error_message,
             )
-            event_log_model.add_event_log(
+            await run_blocking(
+                event_log_model.add_event_log,
                 self.settings,
                 level="error",
                 event_type="record_start_failed",
@@ -567,7 +585,8 @@ class RecorderManager:
             )
         except StreamUrlNotReadyError as exc:
             standby_message = str(exc)
-            recording_model.update_recording_fields(
+            await run_blocking(
+                recording_model.update_recording_fields,
                 self.settings,
                 recording_id,
                 status="standby_no_stream",
@@ -582,13 +601,15 @@ class RecorderManager:
             )
         except ValueError as exc:
             error_message = str(exc)
-            recording_model.update_recording_fields(
+            await run_blocking(
+                recording_model.update_recording_fields,
                 self.settings,
                 recording_id,
                 status="failed",
                 error_message=error_message,
             )
-            event_log_model.add_event_log(
+            await run_blocking(
+                event_log_model.add_event_log,
                 self.settings,
                 level="error",
                 event_type="record_start_failed",
@@ -603,8 +624,14 @@ class RecorderManager:
                 error=error_message,
             )
 
-        recording_model.update_recording_with_probe_payload(self.settings, recording_id, payload)
-        recording_model.update_recording_fields(
+        await run_blocking(
+            recording_model.update_recording_with_probe_payload,
+            self.settings,
+            recording_id,
+            payload,
+        )
+        await run_blocking(
+            recording_model.update_recording_fields,
             self.settings,
             recording_id,
             status="starting",
@@ -636,17 +663,23 @@ class RecorderManager:
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
             )
+        except asyncio.CancelledError:
+            if subscription_proxy is not None:
+                await run_blocking(subscription_proxy.stop)
+            raise
         except SubscriptionPlusResolveError as exc:
             if subscription_proxy is not None:
                 await run_blocking(subscription_proxy.stop)
             error_message = str(exc)
-            recording_model.update_recording_fields(
+            await run_blocking(
+                recording_model.update_recording_fields,
                 self.settings,
                 recording_id,
                 status="failed",
                 error_message=error_message,
             )
-            event_log_model.add_event_log(
+            await run_blocking(
+                event_log_model.add_event_log,
                 self.settings,
                 level="error",
                 event_type="record_start_failed",
@@ -664,13 +697,15 @@ class RecorderManager:
             if subscription_proxy is not None:
                 await run_blocking(subscription_proxy.stop)
             error_message = f"녹화 프로세스 시작에 실패했습니다: {exc}"
-            recording_model.update_recording_fields(
+            await run_blocking(
+                recording_model.update_recording_fields,
                 self.settings,
                 recording_id,
                 status="failed",
                 error_message=error_message,
             )
-            event_log_model.add_event_log(
+            await run_blocking(
+                event_log_model.add_event_log,
                 self.settings,
                 level="error",
                 event_type="record_start_failed",
@@ -685,60 +720,69 @@ class RecorderManager:
                 error=error_message,
             )
 
-        started_at = now_utc().isoformat()
-        recording_model.update_recording_fields(
-            self.settings,
-            recording_id,
-            status="recording",
-            recording_started_at=started_at,
-        )
-
-        event_log_model.add_event_log(
-            self.settings,
-            level="info",
-            event_type="record_start",
-            channel_id=channel_id,
-            recording_id=recording_id,
-            message=f"스트림 URL로 녹화를 시작했습니다. 제목: {broad_title}",
-            payload={
-                "playback_url": playback_url,
-                "quality": quality,
-                "resolver": resolver_name,
-                "proxy_enabled_for_resolve": resolver_proxy_url is not None,
-                "temp_path": str(temp_path),
-                "remux_temp_path": str(remux_temp_path),
-                "final_path": str(final_path),
-                **resolver_metadata,
-            },
-        )
-
-        handle = RecordingHandle(
-            channel_id=channel_id,
-            recording_id=recording_id,
-            user_id=user_id,
-            broad_no=broad_no,
-            temp_path=temp_path,
-            remux_temp_path=remux_temp_path,
-            final_path=final_path,
-            process=process,
-            subscription_proxy=subscription_proxy,
-        )
-
-        async with self._lock:
-            self._handles[channel_id] = handle
-            watch_task = asyncio.create_task(
-                self._watch_process(handle),
-                name=f"watch-recording-{channel_id}",
+        try:
+            started_at = now_utc().isoformat()
+            await run_blocking(
+                recording_model.update_recording_fields,
+                self.settings,
+                recording_id,
+                status="recording",
+                recording_started_at=started_at,
             )
-            handle.watch_task = watch_task
-            self._finalize_tasks.add(watch_task)
-            watch_task.add_done_callback(self._finalize_tasks.discard)
 
-        return EnsureRecordingResult(
-            active=True,
-            started=True,
-            recording_id=recording_id,
-        )
+            await run_blocking(
+                event_log_model.add_event_log,
+                self.settings,
+                level="info",
+                event_type="record_start",
+                channel_id=channel_id,
+                recording_id=recording_id,
+                message=f"스트림 URL로 녹화를 시작했습니다. 제목: {broad_title}",
+                payload={
+                    "playback_url": playback_url,
+                    "quality": quality,
+                    "resolver": resolver_name,
+                    "proxy_enabled_for_resolve": resolver_proxy_url is not None,
+                    "temp_path": str(temp_path),
+                    "remux_temp_path": str(remux_temp_path),
+                    "final_path": str(final_path),
+                    **resolver_metadata,
+                },
+            )
+
+            handle = RecordingHandle(
+                channel_id=channel_id,
+                recording_id=recording_id,
+                user_id=user_id,
+                broad_no=broad_no,
+                temp_path=temp_path,
+                remux_temp_path=remux_temp_path,
+                final_path=final_path,
+                process=process,
+                subscription_proxy=subscription_proxy,
+            )
+
+            async with self._lock:
+                self._handles[channel_id] = handle
+                watch_task = asyncio.create_task(
+                    self._watch_process(handle),
+                    name=f"watch-recording-{channel_id}",
+                )
+                handle.watch_task = watch_task
+                self._finalize_tasks.add(watch_task)
+                watch_task.add_done_callback(self._finalize_tasks.discard)
+
+            return EnsureRecordingResult(
+                active=True,
+                started=True,
+                recording_id=recording_id,
+            )
+
+        except BaseException:
+            await self._terminate_subprocess(process, grace_sec=RESOLVER_TERMINATE_GRACE_SEC)
+            if subscription_proxy is not None:
+                await run_blocking(subscription_proxy.stop)
+            raise
 
     async def _watch_process(self, handle: RecordingHandle) -> None:
         channel_id = handle.channel_id
@@ -750,6 +794,7 @@ class RecorderManager:
             else:
                 await handle.process.wait()
 
+            await self._mark_capture_done(handle)
             if handle.subscription_proxy is not None:
                 await run_blocking(handle.subscription_proxy.stop)
 
@@ -757,15 +802,14 @@ class RecorderManager:
             stopped_at = now_utc().isoformat()
             stderr_tail = self._tail_text(stderr_text)
 
-            recording_model.update_recording_fields(
+            await run_blocking(
+                recording_model.update_recording_fields,
                 self.settings,
                 handle.recording_id,
                 status="remuxing",
                 recording_stopped_at=stopped_at,
                 error_message=None,
             )
-
-            await self._mark_capture_done(handle)
 
             remux_result, resolved_final_path = await self._run_remux(
                 recording_id=handle.recording_id,
@@ -786,7 +830,8 @@ class RecorderManager:
                 if handle.final_path != requested_final_path:
                     payload["requested_final_path"] = str(requested_final_path)
                     payload["renamed_due_to_collision"] = True
-                event_log_model.add_event_log(
+                await run_blocking(
+                    event_log_model.add_event_log,
                     self.settings,
                     level="info",
                     event_type="record_complete",
@@ -799,7 +844,8 @@ class RecorderManager:
                 error_message = "녹화가 실패 상태로 종료되었습니다."
                 recovery_path: str | None = None
                 latest_status = "failed"
-                latest_recording = recording_model.get_recording_by_id(
+                latest_recording = await run_blocking(
+                    recording_model.get_recording_by_id,
                     self.settings,
                     handle.recording_id,
                 )
@@ -824,7 +870,8 @@ class RecorderManager:
                     partial_message = "녹화가 partial 상태로 종료되었습니다."
                     if recovery_path:
                         partial_message = f"{partial_message} 복구 파일: {recovery_path}"
-                    event_log_model.add_event_log(
+                    await run_blocking(
+                        event_log_model.add_event_log,
                         self.settings,
                         level="warning",
                         event_type="record_partial",
@@ -834,7 +881,8 @@ class RecorderManager:
                         payload=payload,
                     )
                 else:
-                    event_log_model.add_event_log(
+                    await run_blocking(
+                        event_log_model.add_event_log,
                         self.settings,
                         level="error",
                         event_type="record_failed",
@@ -926,7 +974,7 @@ class RecorderManager:
         try:
             _, stderr_bytes = await process.communicate()
         except asyncio.CancelledError:
-            await self._terminate_subprocess(process)
+            await self._terminate_subprocess(process, grace_sec=RESOLVER_TERMINATE_GRACE_SEC)
             raise
         reason = "ffmpeg remux에 실패했습니다"
         ffmpeg_tail = self._tail_text((stderr_bytes or b"").decode("utf-8", errors="ignore"))
@@ -1287,7 +1335,9 @@ class RecorderManager:
         password = str(auth.get("password") or "")
         cookies_txt_path = str(auth.get("cookies_txt_path") or "").strip()
         if cookies_txt_path:
-            cookie_args = self._build_http_cookie_args(load_soop_cookie_file(cookies_txt_path))
+            cookie_args = self._build_http_cookie_args(
+                await run_blocking(load_soop_cookie_file, cookies_txt_path)
+            )
             if cookie_args:
                 args.extend(cookie_args)
                 auth_sources.append("cookies_txt")

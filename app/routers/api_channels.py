@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import sqlite3
 
@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from app.models import channel as channel_model
 from app.models import recording as recording_model
 from app.schemas.channel import ChannelCreate, ChannelRead, ChannelUpdate
+from app.utils.asyncio import run_blocking
 
 router = APIRouter(prefix="/api/channels", tags=["channels"])
 
@@ -14,13 +15,13 @@ router = APIRouter(prefix="/api/channels", tags=["channels"])
 @router.get("", response_model=list[ChannelRead])
 async def api_list_channels(request: Request) -> list[dict]:
     settings = request.app.state.settings
-    return channel_model.list_channels(settings)
+    return await run_blocking(channel_model.list_channels, settings)
 
 
 @router.get("/{channel_id}", response_model=ChannelRead)
 async def api_get_channel(request: Request, channel_id: int) -> dict:
     settings = request.app.state.settings
-    channel = channel_model.get_channel(settings, channel_id)
+    channel = await run_blocking(channel_model.get_channel, settings, channel_id)
     if channel is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -32,12 +33,11 @@ async def api_get_channel(request: Request, channel_id: int) -> dict:
 @router.post("", response_model=ChannelRead, status_code=status.HTTP_201_CREATED)
 async def api_create_channel(request: Request, payload: ChannelCreate) -> dict:
     settings = request.app.state.settings
-    stream_password = (
-        payload.stream_password.strip() if payload.stream_password else None
-    ) or None
+    stream_password = (payload.stream_password.strip() if payload.stream_password else None) or None
 
     try:
-        return channel_model.create_channel(
+        return await run_blocking(
+            channel_model.create_channel,
             settings,
             user_id=payload.user_id.strip(),
             display_name=payload.display_name.strip() if payload.display_name else None,
@@ -57,11 +57,10 @@ async def api_create_channel(request: Request, payload: ChannelCreate) -> dict:
 @router.put("/{channel_id}", response_model=ChannelRead)
 async def api_update_channel(request: Request, channel_id: int, payload: ChannelUpdate) -> dict:
     settings = request.app.state.settings
-    stream_password = (
-        payload.stream_password.strip() if payload.stream_password else None
-    ) or None
+    stream_password = (payload.stream_password.strip() if payload.stream_password else None) or None
 
-    updated = channel_model.update_channel(
+    updated = await run_blocking(
+        channel_model.update_channel,
         settings,
         channel_id,
         display_name=payload.display_name.strip() if payload.display_name else None,
@@ -82,17 +81,21 @@ async def api_update_channel(request: Request, channel_id: int, payload: Channel
 @router.delete("/{channel_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def api_delete_channel(request: Request, channel_id: int) -> None:
     settings = request.app.state.settings
-    active_recording = recording_model.get_active_recording_for_channel(settings, channel_id)
+    active_recording = await run_blocking(
+        recording_model.get_active_recording_for_channel, settings, channel_id
+    )
     if active_recording is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="진행 중인 녹화 또는 remux가 있어 채널을 삭제할 수 없습니다.",
         )
 
-    deleted = channel_model.delete_channel(settings, channel_id)
+    try:
+        deleted = await run_blocking(channel_model.delete_channel, settings, channel_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="채널을 찾을 수 없습니다.",
         )
-

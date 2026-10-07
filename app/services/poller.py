@@ -14,6 +14,7 @@ from app.models import recording as recording_model
 from app.services.recorder import EnsureRecordingResult, RecorderManager
 from app.services.soop_probe import ProbeResult, ProbeStatus, probe_channel
 from app.services.soop_subscription import has_subscription_plus_hint
+from app.utils.asyncio import run_blocking
 from app.utils.time import now_utc
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,7 @@ class Supervisor:
         self._task: asyncio.Task[None] | None = None
         self._http_client: httpx.AsyncClient | None = None
         self._last_maintenance_at: datetime | None = None
+        self._maintenance_task: asyncio.Task[None] | None = None
         self._force_probe_channel_ids: set[int] = set()
         self._manual_record_request_channel_ids: set[int] = set()
         self._manual_stop_hold_broad_no_by_channel_id: dict[int, int] = {}
@@ -64,13 +66,16 @@ class Supervisor:
         if self.state.running:
             return
 
-        interrupted_count = recording_model.mark_active_recordings_interrupted(self.settings)
-        interrupted_recordings = recording_model.list_interrupted_recordings(self.settings)
-        recovery_count = await self.recorder.recover_interrupted_recordings(
-            interrupted_recordings
+        interrupted_count = await run_blocking(
+            recording_model.mark_active_recordings_interrupted, self.settings
         )
+        interrupted_recordings = await run_blocking(
+            recording_model.list_interrupted_recordings, self.settings
+        )
+        recovery_count = await self.recorder.recover_interrupted_recordings(interrupted_recordings)
         if interrupted_count > 0 or recovery_count > 0:
-            event_log_model.add_event_log(
+            await run_blocking(
+                event_log_model.add_event_log,
                 self.settings,
                 level="warning",
                 event_type="startup_recovery",
@@ -84,7 +89,7 @@ class Supervisor:
                 },
             )
 
-        self._run_maintenance(now_utc(), force=True)
+        self._schedule_maintenance(now_utc(), force=True)
 
         self._stop_event.clear()
         self._wake_event.clear()
@@ -108,6 +113,8 @@ class Supervisor:
 
         await self._cancel_recording_start_tasks()
         await self.recorder.stop_all(reason=recorder_stop_reason)
+        if self._maintenance_task is not None:
+            await self._maintenance_task
 
         if self._http_client is not None:
             await self._http_client.aclose()
@@ -227,7 +234,8 @@ class Supervisor:
             next_status = self._status_from_ensure_result(ensure_result)
 
             if created and ensure_result.active:
-                event_log_model.add_event_log(
+                await run_blocking(
+                    event_log_model.add_event_log,
                     self.settings,
                     level="info",
                     event_type="live_detected",
@@ -237,7 +245,7 @@ class Supervisor:
                     payload={"broad_no": broad_no},
                 )
 
-            self._log_live_status_transition(
+            await self._log_live_status_transition(
                 channel=channel,
                 recording_id=recording_id,
                 broad_no=broad_no,
@@ -247,7 +255,8 @@ class Supervisor:
                 error=ensure_result.error,
             )
 
-            channel_model.update_status_if_current_broadcast(
+            await run_blocking(
+                channel_model.update_status_if_current_broadcast,
                 self.settings,
                 channel_id,
                 broad_no=broad_no,
@@ -263,20 +272,23 @@ class Supervisor:
                 channel_id,
                 recording_id,
             )
-            recording_model.update_recording_fields(
+            await run_blocking(
+                recording_model.update_recording_fields,
                 self.settings,
                 recording_id,
                 status="failed",
                 error_message=error_message,
             )
-            channel_model.update_status_if_current_broadcast(
+            await run_blocking(
+                channel_model.update_status_if_current_broadcast,
                 self.settings,
                 channel_id,
                 broad_no=broad_no,
                 last_status="error",
                 last_error=error_message,
             )
-            event_log_model.add_event_log(
+            await run_blocking(
+                event_log_model.add_event_log,
                 self.settings,
                 level="error",
                 event_type="record_start_failed",
@@ -309,8 +321,8 @@ class Supervisor:
 
     async def _poll_channels(self) -> None:
         now = now_utc()
-        self._run_maintenance(now)
-        all_channels = channel_model.list_channels(self.settings)
+        self._schedule_maintenance(now)
+        all_channels = await run_blocking(channel_model.list_channels, self.settings)
         forced_probe_channel_ids = self._pop_forced_probe_channel_ids(all_channels)
         manual_record_request_channel_ids = self._pop_manual_record_request_channel_ids(
             all_channels
@@ -330,9 +342,7 @@ class Supervisor:
 
             if result.status == ProbeStatus.LIVE:
                 manual_record_requested = channel_id in manual_record_request_channel_ids
-                allow_auto_start = bool(channel.get("enabled")) or (
-                    manual_record_requested
-                )
+                allow_auto_start = bool(channel.get("enabled")) or (manual_record_requested)
                 await self._handle_live(
                     channel,
                     result,
@@ -342,7 +352,7 @@ class Supervisor:
             elif result.status == ProbeStatus.OFFLINE:
                 await self._handle_offline(channel)
             else:
-                self._handle_probe_error(channel, result)
+                await self._handle_probe_error(channel, result)
 
     def _pop_forced_probe_channel_ids(self, channels: list[dict]) -> set[int]:
         if not self._force_probe_channel_ids:
@@ -364,7 +374,9 @@ class Supervisor:
         self._manual_record_request_channel_ids.intersection_update(channel_ids)
         return requested_channel_ids
 
-    def _run_maintenance(self, now: datetime, *, force: bool = False) -> None:
+    def _schedule_maintenance(self, now: datetime, *, force: bool = False) -> None:
+        if self._maintenance_task is not None and not self._maintenance_task.done():
+            return
         if (
             not force
             and self._last_maintenance_at is not None
@@ -373,7 +385,11 @@ class Supervisor:
             return
 
         self._last_maintenance_at = now
+        self._maintenance_task = asyncio.create_task(
+            run_blocking(self._run_maintenance), name="supervisor-maintenance"
+        )
 
+    def _run_maintenance(self) -> None:
         try:
             event_log_model.cleanup_event_logs(self.settings)
         except Exception:  # pragma: no cover
@@ -426,8 +442,8 @@ class Supervisor:
 
         try:
             broad_no = int(broad_no_raw)
-        except (TypeError, ValueError):
-            self._handle_probe_error(
+        except TypeError, ValueError:
+            await self._handle_probe_error(
                 channel,
                 ProbeResult(
                     status=ProbeStatus.PROBE_ERROR,
@@ -440,10 +456,11 @@ class Supervisor:
             channel_id=channel_id,
             broad_no=broad_no,
         ):
-            channel_model.update_probe_state(
+            await run_blocking(
+                channel_model.update_probe_state,
                 self.settings,
                 channel_id,
-                last_status=self._get_live_channel_status(channel_id),
+                last_status=await self._get_live_channel_status(channel_id),
                 last_broad_no=broad_no,
                 last_probe_at=now_utc().isoformat(),
                 last_error=None,
@@ -452,10 +469,11 @@ class Supervisor:
             return
 
         if not allow_auto_start:
-            channel_model.update_probe_state(
+            await run_blocking(
+                channel_model.update_probe_state,
                 self.settings,
                 channel_id,
-                last_status=self._get_live_channel_status(channel_id),
+                last_status=await self._get_live_channel_status(channel_id),
                 last_broad_no=broad_no,
                 last_probe_at=now_utc().isoformat(),
                 last_error=None,
@@ -470,10 +488,11 @@ class Supervisor:
             and bool(channel.get("skip_subscription_plus"))
             and has_subscription_plus_hint(payload)
         ):
-            channel_model.update_probe_state(
+            await run_blocking(
+                channel_model.update_probe_state,
                 self.settings,
                 channel_id,
-                last_status=self._get_live_channel_status(channel_id),
+                last_status=await self._get_live_channel_status(channel_id),
                 last_broad_no=broad_no,
                 last_probe_at=now_iso,
                 last_error=None,
@@ -481,7 +500,8 @@ class Supervisor:
             )
             return
 
-        recording, created = recording_model.create_or_get_recording_for_live(
+        recording, created = await run_blocking(
+            recording_model.create_or_get_recording_for_live,
             self.settings,
             channel_id=channel_id,
             user_id=channel["user_id"],
@@ -489,7 +509,8 @@ class Supervisor:
             payload=payload,
         )
 
-        recording_model.update_recording_with_probe_payload(
+        await run_blocking(
+            recording_model.update_recording_with_probe_payload,
             self.settings,
             recording["id"],
             payload,
@@ -501,6 +522,16 @@ class Supervisor:
             recording=recording,
         )
         if existing_result is None:
+            await run_blocking(
+                channel_model.update_probe_state,
+                self.settings,
+                channel_id,
+                last_status="starting",
+                last_broad_no=broad_no,
+                last_probe_at=now_iso,
+                last_error=None,
+                offline_streak=0,
+            )
             self._schedule_recording_start(
                 channel=channel,
                 recording=recording,
@@ -511,22 +542,14 @@ class Supervisor:
                 broad_no=broad_no,
             )
 
-            channel_model.update_probe_state(
-                self.settings,
-                channel_id,
-                last_status="starting",
-                last_broad_no=broad_no,
-                last_probe_at=now_iso,
-                last_error=None,
-                offline_streak=0,
-            )
             return
 
         ensure_result = existing_result
         next_status = self._status_from_ensure_result(ensure_result)
 
         if created and ensure_result.active:
-            event_log_model.add_event_log(
+            await run_blocking(
+                event_log_model.add_event_log,
                 self.settings,
                 level="info",
                 event_type="live_detected",
@@ -536,7 +559,7 @@ class Supervisor:
                 payload={"broad_no": broad_no},
             )
 
-        self._log_live_status_transition(
+        await self._log_live_status_transition(
             channel=channel,
             recording_id=recording["id"],
             broad_no=broad_no,
@@ -546,7 +569,8 @@ class Supervisor:
             error=ensure_result.error,
         )
 
-        channel_model.update_probe_state(
+        await run_blocking(
+            channel_model.update_probe_state,
             self.settings,
             channel_id,
             last_status=next_status,
@@ -556,7 +580,7 @@ class Supervisor:
             offline_streak=0,
         )
 
-    def _log_live_status_transition(
+    async def _log_live_status_transition(
         self,
         *,
         channel: dict[str, object],
@@ -569,20 +593,19 @@ class Supervisor:
     ) -> None:
         same_broadcast = prior_broad_no == broad_no
 
-        entering_standby = (
-            next_status == "standby_no_stream"
-            and (prior_status != "standby_no_stream" or not same_broadcast)
+        entering_standby = next_status == "standby_no_stream" and (
+            prior_status != "standby_no_stream" or not same_broadcast
         )
         if entering_standby:
-            event_log_model.add_event_log(
+            await run_blocking(
+                event_log_model.add_event_log,
                 self.settings,
                 level="warning",
                 event_type="stream_url_unavailable",
                 channel_id=int(channel["id"]),
                 recording_id=recording_id,
                 message=(
-                    "방송은 감지됐지만 재생 URL을 아직 확인하지 못했습니다. "
-                    "대기 후 재시도합니다."
+                    "방송은 감지됐지만 재생 URL을 아직 확인하지 못했습니다. 대기 후 재시도합니다."
                 ),
                 payload={
                     "broad_no": broad_no,
@@ -592,12 +615,11 @@ class Supervisor:
             return
 
         recovering_from_standby = (
-            next_status == "recording"
-            and prior_status == "standby_no_stream"
-            and same_broadcast
+            next_status == "recording" and prior_status == "standby_no_stream" and same_broadcast
         )
         if recovering_from_standby:
-            event_log_model.add_event_log(
+            await run_blocking(
+                event_log_model.add_event_log,
                 self.settings,
                 level="info",
                 event_type="stream_url_recovered",
@@ -612,7 +634,7 @@ class Supervisor:
             return None
         try:
             return int(value)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return None
 
     async def _handle_offline(self, channel: dict) -> None:
@@ -622,7 +644,8 @@ class Supervisor:
         offline_streak = prior_streak + 1
         self.clear_manual_stop_hold(channel_id)
 
-        active_recording = recording_model.get_active_recording_for_channel(
+        active_recording = await run_blocking(
+            recording_model.get_active_recording_for_channel,
             self.settings,
             channel_id,
         )
@@ -641,7 +664,8 @@ class Supervisor:
         else:
             status = "offline"
 
-        channel_model.update_probe_state(
+        await run_blocking(
+            channel_model.update_probe_state,
             self.settings,
             channel_id,
             last_status=status,
@@ -651,16 +675,17 @@ class Supervisor:
             offline_streak=offline_streak,
         )
 
-    def _handle_probe_error(self, channel: dict, result: ProbeResult) -> None:
+    async def _handle_probe_error(self, channel: dict, result: ProbeResult) -> None:
         channel_id = int(channel["id"])
         now_iso = now_utc().isoformat()
         error_message = result.error or "프로브 오류"
 
-        next_status = self._get_live_channel_status(channel_id)
+        next_status = await self._get_live_channel_status(channel_id)
         if next_status == "online":
             next_status = "error"
 
-        channel_model.update_probe_state(
+        await run_blocking(
+            channel_model.update_probe_state,
             self.settings,
             channel_id,
             last_status=next_status,
@@ -674,7 +699,8 @@ class Supervisor:
             str(channel.get("last_error") or "") != error_message
             or str(channel.get("last_status") or "") != next_status
         ):
-            event_log_model.add_event_log(
+            await run_blocking(
+                event_log_model.add_event_log,
                 self.settings,
                 level="warning",
                 event_type="probe_error",
@@ -683,8 +709,9 @@ class Supervisor:
                 payload={"error": result.error},
             )
 
-    def _get_live_channel_status(self, channel_id: int) -> str:
-        active_recording = recording_model.get_active_recording_for_channel(
+    async def _get_live_channel_status(self, channel_id: int) -> str:
+        active_recording = await run_blocking(
+            recording_model.get_active_recording_for_channel,
             self.settings,
             channel_id,
         )

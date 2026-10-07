@@ -4,8 +4,10 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
 
 from app.models import settings as settings_model
+from app.utils.asyncio import run_blocking
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+
 
 class AuthSettingsUpdate(BaseModel):
     username: str | None = None
@@ -21,7 +23,7 @@ class ProxySettingsUpdate(BaseModel):
 @router.get("")
 async def api_list_settings(request: Request) -> dict[str, str]:
     app_settings = request.app.state.settings
-    values = settings_model.list_settings(app_settings)
+    values = await run_blocking(settings_model.list_settings, app_settings)
     if settings_model.SOOP_PASSWORD_KEY in values:
         values[settings_model.SOOP_PASSWORD_KEY] = "***"
     if settings_model.CONTROL_PROXY_URL_KEY in values:
@@ -32,7 +34,7 @@ async def api_list_settings(request: Request) -> dict[str, str]:
 @router.get("/auth")
 async def api_get_auth_settings(request: Request) -> dict:
     app_settings = request.app.state.settings
-    auth = settings_model.get_auth_settings(app_settings)
+    auth = await run_blocking(settings_model.get_auth_settings, app_settings)
     return {
         "username": auth["username"],
         "has_password": auth["has_password"],
@@ -44,7 +46,8 @@ async def api_get_auth_settings(request: Request) -> dict:
 async def api_update_auth_settings(request: Request, payload: AuthSettingsUpdate) -> dict:
     app_settings = request.app.state.settings
     try:
-        auth = settings_model.update_auth_settings(
+        auth = await run_blocking(
+            settings_model.update_auth_settings,
             app_settings,
             username=payload.username,
             password=payload.password,
@@ -66,7 +69,7 @@ async def api_update_auth_settings(request: Request, payload: AuthSettingsUpdate
 @router.get("/proxy")
 async def api_get_proxy_settings(request: Request) -> dict:
     app_settings = request.app.state.settings
-    proxy = settings_model.get_proxy_settings(app_settings)
+    proxy = await run_blocking(settings_model.get_proxy_settings, app_settings)
     return {"proxy_url": proxy["proxy_url"]}
 
 
@@ -74,7 +77,8 @@ async def api_get_proxy_settings(request: Request) -> dict:
 async def api_update_proxy_settings(request: Request, payload: ProxySettingsUpdate) -> dict:
     app_settings = request.app.state.settings
     try:
-        proxy = settings_model.update_proxy_settings(
+        proxy = await run_blocking(
+            settings_model.update_proxy_settings,
             app_settings,
             proxy_url=payload.proxy_url,
         )

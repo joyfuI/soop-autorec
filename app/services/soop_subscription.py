@@ -16,6 +16,8 @@ from urllib.parse import urlencode, urljoin, urlparse
 
 import httpx
 
+from app.utils.asyncio import run_blocking
+
 logger = logging.getLogger(__name__)
 
 BROAD_STREAM_ASSIGN_URL = "https://livestream-manager.sooplive.com/broad_stream_assign.html"
@@ -59,7 +61,7 @@ class SubscriptionPlusStream:
 def has_subscription_plus_hint(payload: dict[str, Any]) -> bool:
     try:
         return int(payload.get("subscriptionOnly") or 0) > 0
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False
 
 
@@ -219,9 +221,7 @@ class SubscriptionPlusHlsProxy:
             )
             private_result = _parse_int(private_auth.get("result"))
             if private_result != 1:
-                raise SubscriptionPlusResolveError(
-                    "구독플러스 방송 CDN 인증 갱신에 실패했습니다."
-                )
+                raise SubscriptionPlusResolveError("구독플러스 방송 CDN 인증 갱신에 실패했습니다.")
 
             cookies = _cookies_from_private_auth(client, private_auth)
             missing = sorted(CLOUDFRONT_COOKIE_NAMES - set(cookies))
@@ -335,7 +335,7 @@ async def resolve_subscription_plus_stream(
     proxy_url: str | None,
     timeout_sec: float = 20.0,
 ) -> SubscriptionPlusStream | None:
-    cookies = load_soop_cookie_file(cookies_txt_path)
+    cookies = await run_blocking(load_soop_cookie_file, cookies_txt_path)
     headers = build_soop_browser_headers(user_id=user_id, broad_no=broad_no)
     auth_source = "cookies_txt" if cookies else "none"
     login_attempted = False
@@ -703,8 +703,7 @@ def _build_channel_info_error(
         hint = "username/password 로그인 후에도 권한 확인에 실패했습니다. 시청 권한을 확인해주세요."
 
     return SubscriptionPlusResolveError(
-        "구독플러스 방송 재생 정보 확인에 실패했습니다. "
-        f"SOOP RESULT={channel_result}. {hint}"
+        f"구독플러스 방송 재생 정보 확인에 실패했습니다. SOOP RESULT={channel_result}. {hint}"
     )
 
 
@@ -714,11 +713,7 @@ def _cookies_to_dict(
     exclude_names: set[str] | None = None,
 ) -> dict[str, str]:
     excluded = exclude_names or set()
-    return {
-        cookie.name: cookie.value
-        for cookie in cookies.jar
-        if cookie.name not in excluded
-    }
+    return {cookie.name: cookie.value for cookie in cookies.jar if cookie.name not in excluded}
 
 
 def _cookies_from_private_auth(
@@ -742,11 +737,7 @@ def _parse_cookie_header(cookie_header: str) -> dict[str, str]:
 
 
 def _exclude_cloudfront_cookies(cookies: dict[str, str]) -> dict[str, str]:
-    return {
-        name: value
-        for name, value in cookies.items()
-        if name not in CLOUDFRONT_COOKIE_NAMES
-    }
+    return {name: value for name, value in cookies.items() if name not in CLOUDFRONT_COOKIE_NAMES}
 
 
 def _build_record_headers_from_cookie_dict(
@@ -787,9 +778,7 @@ def _cloudfront_policy_expires_at(cookies: dict[str, str]) -> int | None:
         normalized += "=" * (-len(normalized) % 4)
         decoded = base64.b64decode(normalized).decode("utf-8")
         data = json.loads(decoded)
-        return int(
-            data["Statement"][0]["Condition"]["DateLessThan"]["AWS:EpochTime"]
-        )
+        return int(data["Statement"][0]["Condition"]["DateLessThan"]["AWS:EpochTime"])
     except (
         KeyError,
         TypeError,

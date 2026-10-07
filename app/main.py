@@ -13,12 +13,13 @@ from app.routers.api_settings import router as settings_router
 from app.routers.api_system import router as system_router
 from app.routers.ui import router as ui_router
 from app.services.poller import Supervisor
+from app.utils.asyncio import run_blocking
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     settings = get_settings()
-    initialize_database(settings)
+    await run_blocking(initialize_database, settings)
     supervisor = Supervisor(settings)
 
     application.state.settings = settings

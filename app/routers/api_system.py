@@ -14,6 +14,7 @@ from app.db import connect, database_ping
 from app.models import event_log as event_log_model
 from app.services.health import build_health_report
 from app.services.poller import SupervisorState
+from app.utils.asyncio import run_blocking
 from app.utils.time import now_utc
 
 router = APIRouter(prefix="/api/system", tags=["system"])
@@ -29,7 +30,7 @@ async def api_health(request: Request) -> dict:
 
     report = build_health_report(
         state=supervisor.state,
-        db_ok=database_ping(settings),
+        db_ok=await run_blocking(database_ping, settings),
     )
     return report.to_dict()
 
@@ -43,7 +44,7 @@ async def api_status(request: Request) -> dict:
         event_log_mtime_ns,
         recording_max_id,
         channel_dashboard_cursor,
-    ) = _fetch_stream_db_cursor(settings)
+    ) = await run_blocking(_fetch_stream_db_cursor, settings)
     return {
         "running": state.running,
         "iteration_count": state.iteration_count,
@@ -134,7 +135,7 @@ async def api_stream(request: Request) -> StreamingResponse:
 
     async def event_generator():
         try:
-            last_state_key = _build_stream_state_key(settings, state)
+            last_state_key = await run_blocking(_build_stream_state_key, settings, state)
         except Exception:  # pragma: no cover
             logger.exception("Failed to build initial stream state key.")
             last_state_key = None
@@ -148,7 +149,7 @@ async def api_stream(request: Request) -> StreamingResponse:
             await asyncio.sleep(STREAM_POLL_INTERVAL_SEC)
 
             try:
-                state_key = _build_stream_state_key(settings, state)
+                state_key = await run_blocking(_build_stream_state_key, settings, state)
             except Exception:  # pragma: no cover
                 logger.exception("Failed to build stream state key.")
                 continue
