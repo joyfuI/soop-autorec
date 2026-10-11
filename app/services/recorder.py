@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -186,6 +187,11 @@ class RecorderManager:
 
             await asyncio.gather(*tasks, return_exceptions=True)
 
+    def _discard_finalize_task(self, task: asyncio.Task[None]) -> None:
+        self._finalize_tasks.discard(task)
+        if not task.cancelled():
+            task.exception()
+
     async def recover_interrupted_recordings(
         self,
         recordings: list[dict[str, Any]],
@@ -232,7 +238,7 @@ class RecorderManager:
                 name="recover-interrupted-recordings",
             )
             self._finalize_tasks.add(task)
-            task.add_done_callback(self._finalize_tasks.discard)
+            task.add_done_callback(self._discard_finalize_task)
 
         return len(recoveries)
 
@@ -765,7 +771,7 @@ class RecorderManager:
                 )
                 handle.watch_task = watch_task
                 self._finalize_tasks.add(watch_task)
-                watch_task.add_done_callback(self._finalize_tasks.discard)
+                watch_task.add_done_callback(self._discard_finalize_task)
 
             return EnsureRecordingResult(
                 active=True,
@@ -1023,15 +1029,19 @@ class RecorderManager:
                         destination_path=candidate,
                     ):
                         continue
-                    recording_model.update_recording_fields(
-                        self.settings,
-                        recording_id,
-                        status="completed",
-                        ffmpeg_exit_code=ffmpeg_exit_code,
-                        file_size_bytes=candidate.stat().st_size,
-                        final_path=str(candidate),
-                        error_message=None,
-                    )
+                    final_path = candidate
+                    try:
+                        self._update_remux_recording(
+                            recording_id,
+                            status="completed",
+                            ffmpeg_exit_code=ffmpeg_exit_code,
+                            file_size_bytes=candidate.stat().st_size,
+                            final_path=str(candidate),
+                            error_message=None,
+                        )
+                    except sqlite3.Error as exc:
+                        error_message = f"완성 파일을 저장했지만 DB 완료 기록에 실패했습니다: {exc}"
+                        break
                     for cleanup_path in (temp_path, remux_output_path):
                         try:
                             cleanup_path.unlink(missing_ok=True)
@@ -1043,10 +1053,11 @@ class RecorderManager:
                         time.monotonic() - finalize_started_at,
                     )
                     return True, candidate
-                error_message = (
-                    "remux 최종 출력 경로가 모두 사용 중이라 저장에 실패했습니다. "
-                    f"확인한 후보 수: {MAX_FINAL_PATH_CANDIDATES}"
-                )
+                else:
+                    error_message = (
+                        "remux 최종 출력 경로가 모두 사용 중이라 저장에 실패했습니다. "
+                        f"확인한 후보 수: {MAX_FINAL_PATH_CANDIDATES}"
+                    )
             except OSError as exc:
                 error_message = f"remux 완료 파일 이동에 실패했습니다: {exc}"
 
@@ -1056,17 +1067,46 @@ class RecorderManager:
         )
         if recovery_path is not None:
             error_message = f"{error_message}; 복구 파일: {recovery_path}"
-        recording_model.update_recording_fields(
-            self.settings,
-            recording_id,
-            status="partial" if recovery_path is not None else "failed",
-            temp_path=str(recovery_path) if recovery_path is not None else None,
-            ffmpeg_exit_code=ffmpeg_exit_code,
-            file_size_bytes=recovery_path.stat().st_size if recovery_path is not None else None,
-            final_path=str(final_path),
-            error_message=error_message,
-        )
+        try:
+            self._update_remux_recording(
+                recording_id,
+                status="partial" if recovery_path is not None else "failed",
+                temp_path=str(recovery_path) if recovery_path is not None else None,
+                ffmpeg_exit_code=ffmpeg_exit_code,
+                file_size_bytes=recovery_path.stat().st_size if recovery_path is not None else None,
+                final_path=str(final_path),
+                error_message=error_message,
+            )
+        except sqlite3.Error as exc:
+            event_log_model.add_event_log(
+                self.settings,
+                level="error",
+                event_type="record_finalize_db_failed",
+                recording_id=recording_id,
+                message=f"녹화 종료 상태를 DB에 기록하지 못했습니다: {exc}",
+                payload={
+                    "final_path": str(final_path),
+                    "recovery_path": str(recovery_path) if recovery_path is not None else None,
+                    "temp_path": str(temp_path),
+                    "remux_temp_path": str(remux_output_path),
+                    "error_message": error_message,
+                },
+            )
+            raise
         return False, final_path
+
+    def _update_remux_recording(self, recording_id: int, **fields: Any) -> None:
+        for attempt in range(3):
+            try:
+                recording_model.update_recording_fields(self.settings, recording_id, **fields)
+                return
+            except sqlite3.OperationalError as exc:
+                if (
+                    getattr(exc, "sqlite_errorcode", 0) & 0xFF != sqlite3.SQLITE_BUSY
+                    or attempt == 2
+                ):
+                    raise
+                time.sleep(0.1)
 
     async def _force_kill_if_needed(self, handle: RecordingHandle) -> None:
         await asyncio.sleep(FORCE_KILL_DELAY_SEC)
@@ -1151,17 +1191,6 @@ class RecorderManager:
                 if destination_created:
                     destination_path.unlink(missing_ok=True)
                 raise
-        else:
-            try:
-                source_path.unlink()
-            except OSError:
-                logger.warning("설치된 remux 임시 파일 삭제에 실패했습니다: %s", source_path)
-            return True
-
-        try:
-            source_path.unlink()
-        except OSError:
-            logger.warning("복사 완료된 remux 임시 파일 삭제에 실패했습니다: %s", source_path)
         return True
 
     def _render_relative_output_path(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -222,6 +223,7 @@ class Supervisor:
     ) -> None:
         channel_id = int(channel["id"])
         recording_id = int(recording["id"])
+        ensure_result: EnsureRecordingResult | None = None
 
         try:
             async with self._recording_start_semaphore:
@@ -267,33 +269,51 @@ class Supervisor:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # pragma: no cover
-            error_message = f"녹화 시작 백그라운드 작업에서 오류가 발생했습니다: {exc}"
+            existing_result = await self.recorder.get_existing_recording_result(recording=recording)
+            session_connected = any(
+                result is not None
+                and result.recording_id == recording_id
+                and (result.active or result.finalizing)
+                for result in (ensure_result, existing_result)
+            )
+            error_message = (
+                f"녹화 세션 연결 후 상태 기록에 실패했습니다: {exc}"
+                if session_connected
+                else f"녹화 시작 백그라운드 작업에서 오류가 발생했습니다: {exc}"
+            )
             logger.exception(
                 "Recording start task failed for channel_id=%s recording_id=%s",
                 channel_id,
                 recording_id,
             )
-            await run_blocking(
-                recording_model.update_recording_fields,
-                self.settings,
-                recording_id,
-                status="failed",
-                error_message=error_message,
-            )
-            await run_blocking(
-                channel_model.update_status_if_current_broadcast,
-                self.settings,
-                channel_id,
-                broad_no=broad_no,
-                recording_id=recording_id,
-                last_status="error",
-                last_error=error_message,
-            )
+            if not session_connected:
+                try:
+                    await run_blocking(
+                        recording_model.update_recording_fields,
+                        self.settings,
+                        recording_id,
+                        only_statuses=("starting", "recording", "standby_no_stream"),
+                        status="failed",
+                        error_message=error_message,
+                    )
+                    await run_blocking(
+                        channel_model.update_status_if_current_broadcast,
+                        self.settings,
+                        channel_id,
+                        broad_no=broad_no,
+                        recording_id=recording_id,
+                        last_status="error",
+                        last_error=error_message,
+                    )
+                except sqlite3.Error:
+                    logger.exception("녹화 시작 실패 상태를 DB에 기록하지 못했습니다.")
             await run_blocking(
                 event_log_model.add_event_log,
                 self.settings,
                 level="error",
-                event_type="record_start_failed",
+                event_type=(
+                    "record_start_status_failed" if session_connected else "record_start_failed"
+                ),
                 channel_id=channel_id,
                 recording_id=recording_id,
                 message=error_message,

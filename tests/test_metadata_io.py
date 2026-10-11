@@ -1,4 +1,6 @@
 import asyncio
+import gc
+import sqlite3
 import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -10,9 +12,133 @@ from app.config import Settings
 from app.db import initialize_database
 from app.main import app
 from app.models import channel, event_log, recording
+from app.services import recorder as recorder_service
 from app.services.poller import Supervisor
 from app.services.recorder import EnsureRecordingResult, RecorderManager, RecordingHandle
 from app.utils.time import now_utc
+
+
+@pytest.mark.parametrize("connected", ["active", "finalizing", "finished", "other_session", "none"])
+@pytest.mark.asyncio
+async def test_start_metadata_failure_preserves_connected_session(monkeypatch, connected):
+    supervisor = Supervisor(Settings(_env_file=None))
+    result = EnsureRecordingResult(True, True, 1)
+    existing = None
+    if connected in {"active", "finalizing", "other_session"}:
+        existing = EnsureRecordingResult(
+            connected != "finalizing", False, 2 if connected == "other_session" else 1,
+            finalizing=connected == "finalizing",
+        )
+    if connected == "finished":
+        ensure = AsyncMock(return_value=result)
+    else:
+        ensure = AsyncMock(side_effect=sqlite3.OperationalError("database is locked"))
+    monkeypatch.setattr(supervisor.recorder, "ensure_recording", ensure)
+    monkeypatch.setattr(
+        supervisor.recorder, "get_existing_recording_result", AsyncMock(return_value=existing)
+    )
+    monkeypatch.setattr(supervisor, "_log_live_status_transition", AsyncMock())
+    channel_update = Mock(side_effect=sqlite3.OperationalError("database is locked"))
+    recording_update = Mock()
+    events = Mock()
+    monkeypatch.setattr(channel, "update_status_if_current_broadcast", channel_update)
+    monkeypatch.setattr(recording, "update_recording_fields", recording_update)
+    monkeypatch.setattr(event_log, "add_event_log", events)
+    await supervisor._run_recording_start(
+        channel={"id": 1}, recording={"id": 1, "channel_id": 1, "broad_no": 1},
+        payload={}, created=False, prior_status="starting", prior_broad_no=1, broad_no=1,
+    )
+    protected = connected in {"active", "finalizing", "finished"}
+    assert recording_update.call_count == (0 if protected else 1)
+    assert channel_update.call_count == (1 if connected == "finished" or not protected else 0)
+    event = events.call_args.kwargs
+    assert event["event_type"] == (
+        "record_start_status_failed" if protected else "record_start_failed"
+    )
+    if not protected:
+        assert recording_update.call_args.kwargs["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_start_failure_logs_event_even_when_failed_status_cannot_be_saved(monkeypatch):
+    supervisor = Supervisor(Settings(_env_file=None))
+    monkeypatch.setattr(
+        supervisor.recorder, "ensure_recording", AsyncMock(side_effect=RuntimeError("start failed"))
+    )
+    monkeypatch.setattr(
+        recording, "update_recording_fields", Mock(side_effect=sqlite3.OperationalError("locked"))
+    )
+    events = Mock()
+    monkeypatch.setattr(event_log, "add_event_log", events)
+    await supervisor._run_recording_start(
+        channel={"id": 1}, recording={"id": 1, "channel_id": 1, "broad_no": 1},
+        payload={}, created=False, prior_status="starting", prior_broad_no=1, broad_no=1,
+    )
+    assert events.call_args.kwargs["event_type"] == "record_start_failed"
+    assert "start failed" in events.call_args.kwargs["message"]
+
+
+@pytest.mark.parametrize("task_kind", ["watch", "recovery"])
+@pytest.mark.asyncio
+async def test_failed_finalize_task_is_retrieved(tmp_path, monkeypatch, task_kind):
+    monkeypatch.chdir(tmp_path)
+    manager = RecorderManager(Settings(_env_file=None))
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    unhandled = []
+    loop.set_exception_handler(lambda loop, context: unhandled.append(context))
+    monkeypatch.setattr(event_log, "add_event_log", lambda *args, **kwargs: None)
+    finished = threading.Event()
+
+    def update(*args, **fields):
+        if task_kind == "watch" and fields.get("status") == "remuxing":
+            finished.set()
+            raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(recording, "update_recording_fields", update)
+    try:
+        if task_kind == "watch":
+            monkeypatch.setattr(manager, "_validate_binaries", lambda: None)
+            monkeypatch.setattr(manager, "_resolve_stream_url", AsyncMock(return_value="http://test/hls"))
+            monkeypatch.setattr(
+                recorder_service.settings_model, "get_proxy_settings", lambda *args: {}
+            )
+            monkeypatch.setattr(
+                recorder_service.settings_model, "get_auth_credentials", lambda *args: {}
+            )
+            process = SimpleNamespace(returncode=0, stderr=None, wait=AsyncMock())
+            monkeypatch.setattr(
+                recorder_service.asyncio, "create_subprocess_exec", AsyncMock(return_value=process)
+            )
+            await manager._start_recording(
+                channel={"id": 1, "user_id": "test", "preferred_quality": "best"},
+                recording={"id": 1, "channel_id": 1, "broad_no": 1}, payload={},
+            )
+            assert await asyncio.to_thread(finished.wait, 2)
+        else:
+            source = tmp_path / "recording.ts"
+            source.write_bytes(b"recorded media")
+
+            async def fail(recoveries):
+                raise sqlite3.OperationalError("database is locked")
+
+            monkeypatch.setattr(manager, "_run_interrupted_recording_recoveries", fail)
+            assert await manager.recover_interrupted_recordings([{
+                "id": 1, "channel_id": 1, "temp_path": str(source),
+                "final_path": str(tmp_path / "final.mp4"),
+            }]) == 1
+        for _ in range(20):
+            if not manager._finalize_tasks:
+                break
+            await asyncio.sleep(0.01)
+        assert not manager._finalize_tasks
+        gc.collect()
+        await asyncio.sleep(0)
+        assert not unhandled
+        if task_kind == "watch":
+            assert manager.active_count == manager.finalizing_count == 0
+    finally:
+        loop.set_exception_handler(previous_handler)
 
 
 @pytest.mark.parametrize(
@@ -283,3 +409,40 @@ async def test_capture_exit_releases_new_broadcast_before_proxy_cleanup(tmp_path
     finally:
         release.set()
         await task
+
+
+@pytest.mark.asyncio
+async def test_late_start_failure_does_not_overwrite_completed_session(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    settings = Settings(_env_file=None)
+    initialize_database(settings)
+    item = channel.create_channel(
+        settings,
+        user_id="test",
+        display_name=None,
+        enabled=True,
+        skip_subscription_plus=False,
+        output_template=None,
+        stream_password=None,
+        preferred_quality="best",
+    )
+    session = create_session(settings, item["id"])
+    recording.update_recording_fields(settings, session["id"], status="completed")
+    supervisor = Supervisor(settings)
+    monkeypatch.setattr(
+        supervisor.recorder,
+        "ensure_recording",
+        AsyncMock(side_effect=sqlite3.OperationalError("database is locked")),
+    )
+    monkeypatch.setattr(channel, "update_status_if_current_broadcast", Mock())
+    monkeypatch.setattr(event_log, "add_event_log", Mock())
+    await supervisor._run_recording_start(
+        channel=item,
+        recording=session,
+        payload={},
+        created=False,
+        prior_status="recording",
+        prior_broad_no=1,
+        broad_no=1,
+    )
+    assert recording.get_recording_by_id(settings, session["id"])["status"] == "completed"

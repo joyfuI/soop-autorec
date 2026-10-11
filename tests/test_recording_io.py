@@ -1,8 +1,10 @@
 import asyncio
 import errno
+import json
+import sqlite3
 import threading
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -13,17 +15,23 @@ from app.services import recorder
 from app.utils.asyncio import run_blocking
 
 
-async def remux(tmp_path, monkeypatch, *, install=None):
+async def remux(tmp_path, monkeypatch, *, install=None, update=None):
     manager = recorder.RecorderManager(Settings(_env_file=None))
     source = tmp_path / "recording.ts"
     output = tmp_path / "remux.mp4"
     final = tmp_path / "final.mp4"
     source.write_bytes(b"recorded media")
     updates = []
+
+    def update_fields(*args, **fields):
+        updates.append(fields)
+        if update is not None:
+            update(*args, **fields)
+
     monkeypatch.setattr(
         recorder.recording_model,
         "update_recording_fields",
-        lambda *args, **fields: updates.append(fields),
+        update_fields,
     )
 
     async def start_process(*args, **kwargs):
@@ -48,6 +56,107 @@ async def remux(tmp_path, monkeypatch, *, install=None):
         recorder_stderr="",
     )
     return result, updates, start
+
+
+def busy_error():
+    error = sqlite3.OperationalError("database is locked")
+    error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+    return error
+
+
+@pytest.mark.parametrize("use_copy", [False, True])
+@pytest.mark.asyncio
+async def test_completed_update_retries_without_reinstall_or_early_cleanup(
+    tmp_path, monkeypatch, use_copy
+):
+    monkeypatch.setattr(recorder.time, "sleep", lambda delay: None)
+    if use_copy:
+        def no_link(*args):
+            raise OSError(errno.EXDEV, "cross-device link")
+
+        monkeypatch.setattr(recorder.os, "link", no_link)
+    manager = recorder.RecorderManager(Settings(_env_file=None))
+    install = Mock(wraps=manager._install_file_without_overwrite)
+    attempts = 0
+
+    def update(*args, **fields):
+        nonlocal attempts
+        if fields["status"] == "completed":
+            attempts += 1
+            assert (tmp_path / "recording.ts").exists()
+            assert (tmp_path / "remux.mp4").exists()
+            assert (tmp_path / "final.mp4").read_bytes() == b"remuxed media"
+            if attempts == 1:
+                raise busy_error()
+
+    result, updates, start = await remux(tmp_path, monkeypatch, install=install, update=update)
+    assert result == (True, tmp_path / "final.mp4")
+    assert attempts == 2
+    assert install.call_count == 1
+    start.assert_awaited_once()
+    assert updates[-1]["status"] == "completed"
+    assert not (tmp_path / "recording.ts").exists()
+    assert not (tmp_path / "remux.mp4").exists()
+
+
+@pytest.mark.asyncio
+async def test_completed_update_exhaustion_preserves_collision_path_and_recovery(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(recorder.time, "sleep", lambda delay: None)
+    (tmp_path / "final.mp4").write_bytes(b"existing media")
+
+    def update(*args, **fields):
+        if fields["status"] == "completed":
+            raise busy_error()
+
+    result, updates, start = await remux(tmp_path, monkeypatch, update=update)
+    assert result == (False, tmp_path / "final (1).mp4")
+    assert sum(fields["status"] == "completed" for fields in updates) == 3
+    assert updates[-1]["status"] == "partial"
+    assert updates[-1]["final_path"] == str(result[1])
+    assert updates[-1]["temp_path"] == str(tmp_path / "remux.mp4")
+    assert "DB 완료 기록" in updates[-1]["error_message"]
+    assert (tmp_path / "recording.ts").read_bytes() == b"recorded media"
+    assert (tmp_path / "remux.mp4").read_bytes() == b"remuxed media"
+    assert (tmp_path / "final.mp4").read_bytes() == b"existing media"
+    assert result[1].read_bytes() == b"remuxed media"
+    assert len(list(tmp_path.glob("final*.mp4"))) == 2
+    start.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "error_code, attempts", [(sqlite3.SQLITE_BUSY, 6), (sqlite3.SQLITE_ERROR, 2)]
+)
+@pytest.mark.asyncio
+async def test_remux_database_failure_logs_paths_without_deleting_files(
+    tmp_path, monkeypatch, error_code, attempts
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(recorder.time, "sleep", lambda delay: None)
+    updates = []
+
+    def update(*args, **fields):
+        if fields["status"] in {"completed", "partial"}:
+            updates.append(fields)
+            error = busy_error()
+            error.sqlite_errorcode = error_code
+            raise error
+
+    with pytest.raises(sqlite3.OperationalError):
+        await remux(tmp_path, monkeypatch, update=update)
+    assert len(updates) == attempts
+    assert (tmp_path / "recording.ts").read_bytes() == b"recorded media"
+    assert (tmp_path / "remux.mp4").read_bytes() == b"remuxed media"
+    assert (tmp_path / "final.mp4").read_bytes() == b"remuxed media"
+    event = recorder.event_log_model.list_recent_event_logs(Settings(_env_file=None))[0]
+    assert event["event_type"] == "record_finalize_db_failed"
+    assert event["recording_id"] == 1
+    payload = json.loads(event["payload_json"])
+    assert payload["final_path"] == str(tmp_path / "final.mp4")
+    assert payload["recovery_path"] == str(tmp_path / "remux.mp4")
+    assert payload["temp_path"] == str(tmp_path / "recording.ts")
+    recorder.asyncio.create_subprocess_exec.assert_awaited_once()
 
 
 @pytest.mark.asyncio

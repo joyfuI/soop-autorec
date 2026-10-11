@@ -1,9 +1,12 @@
 ﻿import sqlite3
+import threading
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
 
 from app.config import Settings
+
+_DB_LOCK = threading.Lock()
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS channels (
@@ -62,10 +65,8 @@ def initialize_database(settings: Settings) -> None:
     Path(settings.temp_root_dir).mkdir(parents=True, exist_ok=True)
     Path(settings.cookies_dir).mkdir(parents=True, exist_ok=True)
 
-    with closing(sqlite3.connect(db_path)) as conn:
-        conn.execute("PRAGMA foreign_keys=ON;")
+    with connect(settings) as conn:
         conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA busy_timeout=5000;")
         conn.executescript(SCHEMA_SQL)
         _migrate_schema(conn)
         conn.commit()
@@ -186,14 +187,12 @@ def _migrate_recordings_table(conn: sqlite3.Connection) -> None:
 
 @contextmanager
 def connect(settings: Settings) -> Iterator[sqlite3.Connection]:
-    conn = sqlite3.connect(settings.db_path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON;")
-    conn.execute("PRAGMA busy_timeout=5000;")
-    try:
+    # Closing the last WAL connection can lock out readers as well as writers.
+    with _DB_LOCK, closing(sqlite3.connect(settings.db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON;")
+        conn.execute("PRAGMA busy_timeout=5000;")
         yield conn
-    finally:
-        conn.close()
 
 
 def database_ping(settings: Settings) -> bool:
